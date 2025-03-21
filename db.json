@@ -1,0 +1,25 @@
+{
+  "users": [
+    {
+      "id": "1",
+      "username": "courier1",
+      "password": "12345"
+    }
+  ],
+  "orders": [
+    {
+      "id": "1",
+      "name": "Иван Иванов",
+      "address": "ул. Ленина, 10",
+      "phone": "+79991234567",
+      "delivered": true
+    },
+    {
+      "id": "2",
+      "name": "Мария Петрова",
+      "address": "пр. Мира, 5",
+      "phone": "+79997654321",
+      "delivered": false
+    }
+  ]
+}

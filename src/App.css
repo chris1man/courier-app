@@ -1,0 +1,153 @@
+body {
+  font-family: Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  background-color: #f0f0f0;
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.login-container {
+  background-color: white;
+  padding: 20px;
+  border-radius: 8px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+  width: 100%;
+  max-width: 400px;
+  text-align: center;
+}
+
+h2 {
+  margin-bottom: 20px;
+}
+
+input {
+  width: 100%;
+  padding: 10px;
+  margin: 10px 0;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  box-sizing: border-box;
+}
+
+button {
+  width: 100%;
+  padding: 10px;
+  background-color: #007bff;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+button:hover {
+  background-color: #0056b3;
+}
+
+.orders-container {
+  width: 100%;
+  max-width: 600px;
+  padding: 20px;
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+  margin: 20px auto;
+}
+
+.order-list {
+  list-style: none;
+  padding: 0;
+}
+
+.order-item {
+  border-bottom: 1px solid #ccc;
+  padding: 15px 0;
+}
+
+.order-item:last-child {
+  border-bottom: none;
+}
+
+.order-item a {
+  color: #007bff;
+  text-decoration: none;
+}
+
+.order-item a:hover {
+  text-decoration: underline;
+}
+
+.delivered-text {
+  color: #28a745;
+  font-weight: bold;
+  margin-top: 10px;
+}
+
+/* Стили для слайдера */
+.swipe-container {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  background-color: white;
+  padding: 5px;
+  border-radius: 25px;
+  position: relative;
+}
+
+.swipe-track {
+  height: 50px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+}
+
+.swipe-background {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: #000;
+  transition: background-color 0.3s ease;
+  border-radius: 25px;
+}
+
+.swipe-text {
+  color: #fff;
+  font-size: 0.9em;
+  position: absolute;
+  text-align: center;
+  width: 100%;
+  z-index: 1;
+  opacity: 0.8;
+}
+
+.swipe-slider {
+  width: 60px;
+  height: 60px;
+  background-color: #fff;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  top: -5px;
+  left: -5px;
+  cursor: grab;
+  z-index: 2;
+  transition: transform 0.3s ease;
+  box-shadow: 0 0 2px rgba(0, 0, 0, 0.2);
+}
+
+.swipe-slider:active {
+  cursor: grabbing;
+}
+
+.swipe-slider svg {
+  width: 24px;
+  height: 24px;
+}
