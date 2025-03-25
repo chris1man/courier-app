@@ -8,8 +8,20 @@ function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [courierTag, setCourierTag] = useState(null);
 
+  useEffect(() => {
+    const storedTag = localStorage.getItem('courierTag');
+    if (storedTag) {
+      setIsLoggedIn(true);
+      setCourierTag(storedTag);
+    }
+  }, []);
+
   if (!isLoggedIn) {
-    return <LoginPage onLogin={(tag) => { setIsLoggedIn(true); setCourierTag(tag); }} />;
+    return <LoginPage onLogin={(tag) => {
+      setIsLoggedIn(true);
+      setCourierTag(tag);
+      localStorage.setItem('courierTag', tag);
+    }} />;
   }
 
   return <OrdersPage courierTag={courierTag} />;
@@ -57,6 +69,8 @@ function LoginPage({ onLogin }) {
 function OrdersPage({ courierTag }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [orderMenuOpen, setOrderMenuOpen] = useState(null);
 
   useEffect(() => {
     const fetchInitialOrders = async () => {
@@ -70,13 +84,14 @@ function OrdersPage({ courierTag }) {
       }
     };
     fetchInitialOrders();
-  
+
+    console.log(`Попытка подключения к WebSocket: wss://makiapp.ru/ws?tag=${courierTag}`);
     const ws = new WebSocket(`wss://makiapp.ru/ws?tag=${courierTag}`);
-  
+
     ws.onopen = () => {
       console.log('WebSocket подключён');
     };
-  
+
     ws.onmessage = (event) => {
       console.log('Получено сообщение от WebSocket:', event.data);
       try {
@@ -84,24 +99,25 @@ function OrdersPage({ courierTag }) {
         if (message.type === 'orders') {
           console.log('Обновление заказов:', message.data);
           setOrders(message.data || []);
-          setLoading(false); // Убедимся, что loading сбрасывается
+          setLoading(false);
         }
       } catch (error) {
         console.error('Ошибка парсинга сообщения WebSocket:', error);
       }
     };
-  
+
     ws.onerror = (error) => {
       console.error('Ошибка WebSocket:', error);
       setLoading(false);
     };
-  
+
     ws.onclose = () => {
       console.log('WebSocket отключён');
       setLoading(false);
     };
-  
+
     return () => {
+      console.log('Закрытие WebSocket');
       ws.close();
     };
   }, [courierTag]);
@@ -109,14 +125,30 @@ function OrdersPage({ courierTag }) {
   const handleDeliver = async (id) => {
     try {
       await axios.patch(`${import.meta.env.VITE_BACKEND_URL}/leads/${id}`, { status_id: config.DELIVERED_STATUS_ID });
-      setOrders(orders.map(order =>
-        order.id === id ? { ...order, delivered: true } : order
-      ));
-      alert(`Заказ ${id} отмечен как доставленный`);
+      setOrders(orders.filter(order => order.id !== id));
+      alert(`Заказ ${id} доставлен и удалён`);
     } catch (error) {
-      console.error('Ошибка при обновлении заказа:', error);
-      alert('Не удалось обновить заказ');
+      console.error('Ошибка при доставке заказа:', error);
+      alert('Не удалось отметить заказ как доставленный');
     }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await axios.delete(`${import.meta.env.VITE_BACKEND_URL}/leads/${id}`);
+      setOrders(orders.filter(order => order.id !== id));
+      alert(`Заказ ${id} удалён`);
+    } catch (error) {
+      console.error('Ошибка при удалении заказа:', error);
+      alert('Не удалось удалить заказ');
+    }
+  };
+
+  const handleLogout = () => {
+    setOrders([]);
+    setIsLoggedIn(false);
+    setCourierTag(null);
+    localStorage.removeItem('courierTag');
   };
 
   if (loading) {
@@ -125,21 +157,41 @@ function OrdersPage({ courierTag }) {
 
   return (
     <div className="orders-container">
-      <h2>Ваши заказы</h2>
+      <div className="header-container">
+        <h2>Ваши заказы</h2>
+        <div>
+          <button className="menu-button" onClick={() => setMenuOpen(!menuOpen)}>
+            ⋮
+          </button>
+          {menuOpen && (
+            <div className="menu-dropdown">
+              <button onClick={handleLogout}>Выйти</button>
+            </div>
+          )}
+        </div>
+      </div>
       {orders.length === 0 ? (
         <p>Нет доступных заказов</p>
       ) : (
         <ul className="order-list">
           {orders.map((order) => (
             <li key={order.id} className="order-item">
-              <p><strong>{order.name}</strong></p>
-              <p>{order.address || 'Адрес не указан'}</p>
-              <p><a href={`tel:${order.phone || ''}`}>{order.phone || 'Телефон не указан'}</a></p>
-              {order.delivered ? (
-                <p className="delivered-text">Доставлено</p>
-              ) : (
+              <div>
+                <p><strong>{order.name}</strong></p>
+                <p>{order.address || 'Адрес не указан'}</p>
+                <p><a href={`tel:${order.phone || ''}`}>{order.phone || 'Телефон не указан'}</a></p>
                 <SwipeSlider orderId={order.id} onDeliver={handleDeliver} />
-              )}
+              </div>
+              <div className="order-item-menu">
+                <button className="menu-button" onClick={() => setOrderMenuOpen(orderMenuOpen === order.id ? null : order.id)}>
+                  ⋮
+                </button>
+                {orderMenuOpen === order.id && (
+                  <div className="menu-dropdown">
+                    <button onClick={() => handleDelete(order.id)}>Удалить</button>
+                  </div>
+                )}
+              </div>
             </li>
           ))}
         </ul>

@@ -93,22 +93,42 @@ app.get('/api/leads', (req, res) => {
 
 // Эндпоинт для обновления статуса заказа
 app.patch('/api/leads/:id', async (req, res) => {
+  console.log('Запрос на /api/leads/:id:', req.params, req.body);
+  const { id } = req.params;
+  const { status_id } = req.body; // Новый status_id из фронтенда
+
   try {
-    const response = await axios.patch(
-      `https://${AMOCRM_DOMAIN}/api/v4/leads/${req.params.id}`,
-      req.body,
-      { headers: { Authorization: `Bearer ${API_TOKEN}` } }
-    );
-    // Обновляем локальное хранилище после изменения статуса
-    for (const tag in ordersByCourier) {
-      ordersByCourier[tag] = ordersByCourier[tag].map(lead =>
-        lead.id === parseInt(req.params.id) ? { ...lead, ...req.body } : lead
+      // Обновляем статус в amoCRM
+      const response = await axios.patch(
+          `https://${AMOCRM_DOMAIN}/api/v4/leads/${id}`,
+          { status_id: status_id },
+          { headers: { Authorization: `Bearer ${API_TOKEN}` } }
       );
-    }
-    saveOrdersToFile();
-    res.json(response.data);
+
+      // Удаляем заказ из ordersByCourier для всех тегов
+      for (const tag in ordersByCourier) {
+          const initialLength = ordersByCourier[tag].length;
+          ordersByCourier[tag] = ordersByCourier[tag].filter(lead => lead.id !== parseInt(id));
+          if (ordersByCourier[tag].length < initialLength) {
+              console.log(`Заказ ${id} удалён из ordersByCourier для тега ${tag}`);
+              // Сохраняем изменения в файл
+              saveOrdersToFile();
+              // Отправляем обновлённый список через WebSocket
+              if (clientsByTag[tag] && clientsByTag[tag].length > 0) {
+                  clientsByTag[tag].forEach(client => {
+                      if (client.readyState === WebSocket.OPEN) {
+                          client.send(JSON.stringify({ type: 'orders', data: ordersByCourier[tag] }));
+                          console.log(`Отправлен обновлённый список заказов для тега ${tag}`);
+                      }
+                  });
+              }
+          }
+      }
+
+      res.json(response.data);
   } catch (error) {
-    res.status(error.response?.status || 500).json({ error: error.message });
+      console.error('Ошибка PATCH-запроса:', error.message);
+      res.status(error.response?.status || 500).json({ error: error.message });
   }
 });
 
@@ -180,6 +200,31 @@ app.post('/api/webhook/:courier', async (req, res) => {
     console.error(`Ошибка вебхука для ${courier}:`, error.message);
     res.status(500).json({ error: 'Ошибка обработки вебхука' });
   }
+});
+
+app.delete('/api/leads/:id', (req, res) => {
+  console.log('Запрос на удаление заказа:', req.params);
+  const { id } = req.params;
+
+  // Удаляем заказ из ordersByCourier для всех тегов
+  for (const tag in ordersByCourier) {
+      const initialLength = ordersByCourier[tag].length;
+      ordersByCourier[tag] = ordersByCourier[tag].filter(lead => lead.id !== parseInt(id));
+      if (ordersByCourier[tag].length < initialLength) {
+          console.log(`Заказ ${id} удалён из ordersByCourier для тега ${tag}`);
+          saveOrdersToFile();
+          if (clientsByTag[tag] && clientsByTag[tag].length > 0) {
+              clientsByTag[tag].forEach(client => {
+                  if (client.readyState === WebSocket.OPEN) {
+                      client.send(JSON.stringify({ type: 'orders', data: ordersByCourier[tag] }));
+                      console.log(`Отправлен обновлённый список заказов для тега ${tag}`);
+                  }
+              });
+          }
+      }
+  }
+
+  res.status(200).json({ message: `Заказ ${id} удалён из списка` });
 });
 
 server.listen(PORT, () => {
