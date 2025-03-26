@@ -1,5 +1,4 @@
-import { useState, useEffect } from 'react';
-import { useSwipeable } from 'react-swipeable';
+import { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { config } from './config';
 import './App.css';
@@ -90,8 +89,8 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
     };
     fetchInitialOrders();
 
-    console.log(`Попытка подключения к WebSocket: wss://147.45.161.12:3001/ws?tag=${courierTag}`);
-    const ws = new WebSocket(`wss://147.45.161.12:3001/ws?tag=${courierTag}`);
+    console.log(`Попытка подключения к WebSocket: wss://makiapp.ru/ws?tag=${courierTag}`);
+    const ws = new WebSocket(`wss://makiapp.ru/ws?tag=${courierTag}`);
 
     ws.onopen = () => {
       console.log('WebSocket подключён');
@@ -160,6 +159,11 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
     setActiveMenu(activeMenu === menuId ? null : menuId);
   };
 
+  const getCustomFieldValue = (fields, fieldId) => {
+    const field = fields?.find(f => f.field_id === fieldId);
+    return field?.values[0]?.value || '';
+  };
+
   if (loading) {
     return <div className="loading">Загрузка...</div>;
   }
@@ -183,26 +187,37 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
         <p>Нет доступных заказов</p>
       ) : (
         <ul className="order-list">
-          {orders.map((order) => (
-            <li key={order.id} className="order-item">
-              <div>
-                <p><strong>{order.name}</strong></p>
-                <p>{order.address || 'Адрес не указан'}</p>
-                <p><a href={`tel:${order.phone || ''}`}>{order.phone || 'Телефон не указан'}</a></p>
-                <SwipeSlider orderId={order.id} onDeliver={handleDeliver} />
-              </div>
-              <div className="order-item-menu">
-                <button className="menu-button" onClick={() => toggleMenu(order.id)}>
-                  ⋮
-                </button>
-                {activeMenu === order.id && (
-                  <div className="menu-dropdown">
-                    <button onClick={() => handleDelete(order.id)}>Удалить</button>
-                  </div>
-                )}
-              </div>
-            </li>
-          ))}
+          {orders.map((order) => {
+            const phone = getCustomFieldValue(order.custom_fields_values, 293293);
+            const formattedPhone = phone.startsWith('7') ? `+${phone}` : phone.startsWith('8') ? phone : phone;
+            return (
+              <li key={order.id} className="order-item">
+                <div>
+                  <p><strong>Номер с сайта:</strong> {order.id}</p>
+                  <p><strong>Номер заказчика:</strong> {order._embedded?.contacts[0]?.id || 'Не указан'}</p>
+                  <p><strong>Дата доставки:</strong> {getCustomFieldValue(order.custom_fields_values, 1037323)}</p>
+                  <p><strong>Время доставки:</strong> {getCustomFieldValue(order.custom_fields_values, 293299)}</p>
+                  <p><strong>Адрес:</strong> {getCustomFieldValue(order.custom_fields_values, 293241)}</p>
+                  <p><strong>Номер телефона получателя:</strong> <a href={`tel:${formattedPhone}`}>{formattedPhone}</a></p>
+                  <p><strong>Имя получателя:</strong> {getCustomFieldValue(order.custom_fields_values, 1018520)}</p>
+                  <p><strong>Сумма заказа:</strong> {order.price} ₽</p>
+                  <p><strong>Итог оплаты:</strong> {getCustomFieldValue(order.custom_fields_values, 1047841)}</p>
+                  <p><strong>Комментарий к доставке:</strong> {getCustomFieldValue(order.custom_fields_values, 1035985)}</p>
+                  <SwipeSlider orderId={order.id} onDeliver={handleDeliver} />
+                </div>
+                <div className="order-item-menu">
+                  <button className="menu-button" onClick={() => toggleMenu(order.id)}>
+                    ⋮
+                  </button>
+                  {activeMenu === order.id && (
+                    <div className="menu-dropdown">
+                      <button onClick={() => handleDelete(order.id)}>Удалить</button>
+                    </div>
+                  )}
+                </div>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>
@@ -210,9 +225,11 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
 }
 
 function SwipeSlider({ orderId, onDeliver }) {
-  const [swipeDelta, setSwipeDelta] = useState(0);
+  const [position, setPosition] = useState(0);
+  const [isCompleted, setIsCompleted] = useState(false);
   const maxSwipe = config.MAX_SWIPE_DISTANCE;
-  const progress = Math.min(swipeDelta / maxSwipe, 1); // Прогресс от 0 до 1
+  const sliderRef = useRef(null);
+  const startX = useRef(null);
 
   const interpolateColor = (start, end, factor) => {
     const r = Math.round(start[0] + (end[0] - start[0]) * factor);
@@ -221,46 +238,57 @@ function SwipeSlider({ orderId, onDeliver }) {
     return `rgb(${r}, ${g}, ${b})`;
   };
 
-  const startColor = [51, 51, 51]; // #333 в RGB
-  const endColor = [40, 167, 69]; // #28a745 в RGB
+  const startColor = [51, 51, 51]; // #333
+  const endColor = [40, 167, 69]; // #28a745
+  const progress = Math.min(position / maxSwipe, 1);
   const backgroundColor = interpolateColor(startColor, endColor, progress);
 
-  const handlers = useSwipeable({
-    onSwipeStart: () => setSwipeDelta(0),
-    onSwiping: (eventData) => {
-      if (eventData.dir === 'Right') {
-        const newDelta = Math.min(eventData.deltaX, maxSwipe);
-        setSwipeDelta(newDelta);
-      }
-    },
-    onSwipedRight: () => {
-      if (swipeDelta >= maxSwipe) {
-        onDeliver(orderId);
-      }
-      setSwipeDelta(0);
-    },
-    onSwiped: () => setSwipeDelta(0),
-    trackMouse: true,
-    delta: config.SWIPE_DELTA_THRESHOLD,
-    preventDefaultTouchmoveEvent: true,
-  });
+  const handleTouchStart = (e) => {
+    startX.current = e.touches[0].clientX;
+    setPosition(0);
+    setIsCompleted(false);
+  };
+
+  const handleTouchMove = (e) => {
+    if (startX.current === null) return;
+    const currentX = e.touches[0].clientX;
+    const deltaX = currentX - startX.current;
+    const newPosition = Math.max(0, Math.min(deltaX, maxSwipe));
+    setPosition(newPosition);
+  };
+
+  const handleTouchEnd = () => {
+    if (position >= maxSwipe) {
+      setIsCompleted(true);
+      onDeliver(orderId);
+    } else {
+      setPosition(0);
+    }
+    startX.current = null;
+  };
 
   return (
     <div className="swipe-container">
       <div className="swipe-track" style={{ width: `${maxSwipe + 50}px` }}>
-        <div
-          className="swipe-background"
-          style={{ backgroundColor }}
-        />
+        <div className="swipe-background" style={{ backgroundColor }} />
         <span className="swipe-text">Доставлено</span>
         <div
-          className={`swipe-slider ${swipeDelta >= maxSwipe ? 'completed' : ''}`}
-          {...handlers}
-          style={{ transform: `translateX(${swipeDelta}px)` }}
+          ref={sliderRef}
+          className={`swipe-slider ${isCompleted ? 'completed' : ''}`}
+          style={{ transform: `translateX(${position}px)` }}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
         >
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="9 18 15 12 9 6" />
-          </svg>
+          {isCompleted ? (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+          ) : (
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          )}
         </div>
       </div>
     </div>

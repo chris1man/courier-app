@@ -1,1 +1,6 @@
-{"danil": {"password": "danil123", "tag": "111"}, "alex": {"password": "alex123", "tag": "Алекс"}}
+{
+    "danil": {"password": "danil123", "tag": "111"}, 
+    "alex": {"password": "alex123", "tag": "леша"}, 
+    "tim": {"password": "tim111", "tag": "222"} 
+
+}
