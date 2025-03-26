@@ -24,7 +24,11 @@ function App() {
     }} />;
   }
 
-  return <OrdersPage courierTag={courierTag} />;
+  return <OrdersPage 
+    courierTag={courierTag} 
+    setIsLoggedIn={setIsLoggedIn} 
+    setCourierTag={setCourierTag} 
+  />;
 }
 
 function LoginPage({ onLogin }) {
@@ -47,30 +51,31 @@ function LoginPage({ onLogin }) {
 
   return (
     <div className="login-container">
-      <h2>Вход для курьеров</h2>
-      <input
-        type="text"
-        placeholder="Логин"
-        value={login}
-        onChange={(e) => setLogin(e.target.value)}
-      />
-      <input
-        type="password"
-        placeholder="Пароль"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-      />
-      {error && <p style={{ color: 'red' }}>{error}</p>}
-      <button onClick={handleLogin}>Войти</button>
+      <div className="login-form">
+        <h2>Вход для курьеров</h2>
+        <input
+          type="text"
+          placeholder="Логин"
+          value={login}
+          onChange={(e) => setLogin(e.target.value)}
+        />
+        <input
+          type="password"
+          placeholder="Пароль"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        {error && <p>{error}</p>}
+        <button onClick={handleLogin}>Войти</button>
+      </div>
     </div>
   );
 }
 
-function OrdersPage({ courierTag }) {
+function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [orderMenuOpen, setOrderMenuOpen] = useState(null);
+  const [activeMenu, setActiveMenu] = useState(null);
 
   useEffect(() => {
     const fetchInitialOrders = async () => {
@@ -85,8 +90,8 @@ function OrdersPage({ courierTag }) {
     };
     fetchInitialOrders();
 
-    console.log(`Попытка подключения к WebSocket: wss://makiapp.ru/ws?tag=${courierTag}`);
-    const ws = new WebSocket(`wss://makiapp.ru/ws?tag=${courierTag}`);
+    console.log(`Попытка подключения к WebSocket: wss://147.45.161.12:3001/ws?tag=${courierTag}`);
+    const ws = new WebSocket(`wss://147.45.161.12:3001/ws?tag=${courierTag}`);
 
     ws.onopen = () => {
       console.log('WebSocket подключён');
@@ -151,6 +156,10 @@ function OrdersPage({ courierTag }) {
     localStorage.removeItem('courierTag');
   };
 
+  const toggleMenu = (menuId) => {
+    setActiveMenu(activeMenu === menuId ? null : menuId);
+  };
+
   if (loading) {
     return <div className="loading">Загрузка...</div>;
   }
@@ -159,11 +168,11 @@ function OrdersPage({ courierTag }) {
     <div className="orders-container">
       <div className="header-container">
         <h2>Ваши заказы</h2>
-        <div>
-          <button className="menu-button" onClick={() => setMenuOpen(!menuOpen)}>
+        <div className="menu-wrapper">
+          <button className="menu-button" onClick={() => toggleMenu('header')}>
             ⋮
           </button>
-          {menuOpen && (
+          {activeMenu === 'header' && (
             <div className="menu-dropdown">
               <button onClick={handleLogout}>Выйти</button>
             </div>
@@ -183,10 +192,10 @@ function OrdersPage({ courierTag }) {
                 <SwipeSlider orderId={order.id} onDeliver={handleDeliver} />
               </div>
               <div className="order-item-menu">
-                <button className="menu-button" onClick={() => setOrderMenuOpen(orderMenuOpen === order.id ? null : order.id)}>
+                <button className="menu-button" onClick={() => toggleMenu(order.id)}>
                   ⋮
                 </button>
-                {orderMenuOpen === order.id && (
+                {activeMenu === order.id && (
                   <div className="menu-dropdown">
                     <button onClick={() => handleDelete(order.id)}>Удалить</button>
                   </div>
@@ -203,6 +212,18 @@ function OrdersPage({ courierTag }) {
 function SwipeSlider({ orderId, onDeliver }) {
   const [swipeDelta, setSwipeDelta] = useState(0);
   const maxSwipe = config.MAX_SWIPE_DISTANCE;
+  const progress = Math.min(swipeDelta / maxSwipe, 1); // Прогресс от 0 до 1
+
+  const interpolateColor = (start, end, factor) => {
+    const r = Math.round(start[0] + (end[0] - start[0]) * factor);
+    const g = Math.round(start[1] + (end[1] - start[1]) * factor);
+    const b = Math.round(start[2] + (end[2] - start[2]) * factor);
+    return `rgb(${r}, ${g}, ${b})`;
+  };
+
+  const startColor = [51, 51, 51]; // #333 в RGB
+  const endColor = [40, 167, 69]; // #28a745 в RGB
+  const backgroundColor = interpolateColor(startColor, endColor, progress);
 
   const handlers = useSwipeable({
     onSwipeStart: () => setSwipeDelta(0),
@@ -221,6 +242,7 @@ function SwipeSlider({ orderId, onDeliver }) {
     onSwiped: () => setSwipeDelta(0),
     trackMouse: true,
     delta: config.SWIPE_DELTA_THRESHOLD,
+    preventDefaultTouchmoveEvent: true,
   });
 
   return (
@@ -228,10 +250,14 @@ function SwipeSlider({ orderId, onDeliver }) {
       <div className="swipe-track" style={{ width: `${maxSwipe + 50}px` }}>
         <div
           className="swipe-background"
-          style={{ backgroundColor: swipeDelta >= maxSwipe ? '#28a745' : '#000' }}
+          style={{ backgroundColor }}
         />
-        <span className="swipe-text">Потяни для подтверждения</span>
-        <div className="swipe-slider" {...handlers} style={{ transform: `translateX(${swipeDelta}px)` }}>
+        <span className="swipe-text">Доставлено</span>
+        <div
+          className={`swipe-slider ${swipeDelta >= maxSwipe ? 'completed' : ''}`}
+          {...handlers}
+          style={{ transform: `translateX(${swipeDelta}px)` }}
+        >
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="9 18 15 12 9 6" />
           </svg>
