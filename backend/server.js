@@ -34,7 +34,7 @@ try {
   ordersByCourier = JSON.parse(fs.readFileSync(ordersFilePath, 'utf8'));
 } catch (error) {
   console.error('Ошибка загрузки файла orders.json:', error.message);
-  ordersByCourier = {}; // Если файла нет, начинаем с пустого объекта
+  ordersByCourier = {};
 }
 
 // Сохранение заказов в файл
@@ -58,7 +58,6 @@ wss.on('connection', (ws, req) => {
     clientsByTag[tag].push(ws);
     console.log(`Курьер с тегом ${tag} подключился через WebSocket`);
 
-    // Отправляем текущие заказы из файла
     const initialOrders = ordersByCourier[tag] || [];
     ws.send(JSON.stringify({ type: 'orders', data: initialOrders }));
 
@@ -84,55 +83,67 @@ app.post('/api/login', (req, res) => {
   }
 });
 
-// Эндпоинт для получения заказов курьера (без запроса к amoCRM)
+// Эндпоинт для получения заказов курьера
 app.get('/api/leads', (req, res) => {
   const { tag } = req.query;
   const leads = ordersByCourier[tag] || [];
   res.json({ _embedded: { leads } });
 });
 
+// Эндпоинт для получения телефона контакта (оставляем для совместимости)
+app.get('/api/contacts/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const response = await axios.get(`https://${AMOCRM_DOMAIN}/api/v4/contacts/${id}`, {
+      headers: { Authorization: `Bearer ${API_TOKEN}` }
+    });
+    const phoneField = response.data.custom_fields_values?.find(field => field.field_type === 'phone');
+    const phone = phoneField?.values[0]?.value || 'Не указан';
+    res.json({ phone });
+  } catch (error) {
+    console.error('Ошибка получения телефона контакта:', error.message);
+    res.status(500).json({ error: 'Не удалось получить данные контакта' });
+  }
+});
+
 // Эндпоинт для обновления статуса заказа
 app.patch('/api/leads/:id', async (req, res) => {
   console.log('Запрос на /api/leads/:id:', req.params, req.body);
   const { id } = req.params;
-  const { status_id } = req.body; // Новый status_id из фронтенда
+  const { status_id } = req.body;
 
   try {
-      // Обновляем статус в amoCRM
-      const response = await axios.patch(
-          `https://${AMOCRM_DOMAIN}/api/v4/leads/${id}`,
-          { status_id: status_id },
-          { headers: { Authorization: `Bearer ${API_TOKEN}` } }
-      );
+    const response = await axios.patch(
+      `https://${AMOCRM_DOMAIN}/api/v4/leads/${id}`,
+      { status_id: status_id },
+      { headers: { Authorization: `Bearer ${API_TOKEN}` } }
+    );
 
-      // Удаляем заказ из ordersByCourier для всех тегов
-      for (const tag in ordersByCourier) {
-          const initialLength = ordersByCourier[tag].length;
-          ordersByCourier[tag] = ordersByCourier[tag].filter(lead => lead.id !== parseInt(id));
-          if (ordersByCourier[tag].length < initialLength) {
-              console.log(`Заказ ${id} удалён из ordersByCourier для тега ${tag}`);
-              // Сохраняем изменения в файл
-              saveOrdersToFile();
-              // Отправляем обновлённый список через WebSocket
-              if (clientsByTag[tag] && clientsByTag[tag].length > 0) {
-                  clientsByTag[tag].forEach(client => {
-                      if (client.readyState === WebSocket.OPEN) {
-                          client.send(JSON.stringify({ type: 'orders', data: ordersByCourier[tag] }));
-                          console.log(`Отправлен обновлённый список заказов для тега ${tag}`);
-                      }
-                  });
-              }
-          }
+    for (const tag in ordersByCourier) {
+      const initialLength = ordersByCourier[tag].length;
+      ordersByCourier[tag] = ordersByCourier[tag].filter(lead => lead.id !== parseInt(id));
+      if (ordersByCourier[tag].length < initialLength) {
+        console.log(`Заказ ${id} удалён из ordersByCourier для тега ${tag}`);
+        saveOrdersToFile();
+        if (clientsByTag[tag] && clientsByTag[tag].length > 0) {
+          clientsByTag[tag].forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+              client.send(JSON.stringify({ type: 'orders', data: ordersByCourier[tag] }));
+              console.log(`Отправлен обновлённый список заказов для тега ${tag}`);
+            }
+          });
+        }
       }
+    }
 
-      res.json(response.data);
+    res.json(response.data);
   } catch (error) {
-      console.error('Ошибка PATCH-запроса:', error.message);
-      res.status(error.response?.status || 500).json({ error: error.message });
+    console.error('Ошибка PATCH-запроса:', error.message);
+    res.status(error.response?.status || 500).json({ error: error.message });
   }
 });
 
-// Вебхук для каждого курьера (единственный триггер для запроса к amoCRM)
+// Вебхук для каждого курьера
 app.get('/api/webhook/:courier', (req, res) => {
   const { courier } = req.params;
   if (couriers[courier]) {
@@ -170,17 +181,40 @@ app.post('/api/webhook/:courier', async (req, res) => {
       lead._embedded.tags.some(t => t.name === tag)
     );
 
+    // Для каждой сделки подгружаем данные контакта
+    for (const lead of newLeads) {
+      const contactId = lead._embedded?.contacts?.[0]?.id;
+      if (contactId) {
+        const contactResponse = await axios.get(`https://${AMOCRM_DOMAIN}/api/v4/contacts/${contactId}`, {
+          headers: { Authorization: `Bearer ${API_TOKEN}` }
+        });
+        const phoneField = contactResponse.data.custom_fields_values?.find(field => field.field_type === 'phone');
+        const workPhoneField = contactResponse.data.custom_fields_values?.find(field => field.field_id === 289537); // Поле 289537
+        lead.contact = {
+          id: contactId,
+          name: contactResponse.data.name || 'Не указано',
+          phone: workPhoneField?.values.find(val => val.enum_code === 'WORK')?.value || phoneField?.values[0]?.value || 'Не указан'
+        };
+      } else {
+        lead.contact = { id: null, name: 'Не указано', phone: 'Не указан' };
+      }
+    }
+
+    // Обновляем ordersByCourier
     ordersByCourier[tag] = ordersByCourier[tag] || [];
     newLeads.forEach(newLead => {
-      if (!ordersByCourier[tag].some(existing => existing.id === newLead.id)) {
+      const existingIndex = ordersByCourier[tag].findIndex(existing => existing.id === newLead.id);
+      if (existingIndex === -1) {
         ordersByCourier[tag].push(newLead);
         console.log(`Добавлен новый заказ для ${courier}: ${newLead.id}`);
+      } else {
+        ordersByCourier[tag][existingIndex] = newLead; // Обновляем существующий заказ
+        console.log(`Обновлён заказ для ${courier}: ${newLead.id}`);
       }
     });
 
     saveOrdersToFile();
 
-    // Проверка и отправка через WebSocket
     console.log(`Клиентов для тега ${tag}: ${clientsByTag[tag] ? clientsByTag[tag].length : 0}`);
     if (clientsByTag[tag] && clientsByTag[tag].length > 0) {
       clientsByTag[tag].forEach(client => {
@@ -206,22 +240,21 @@ app.delete('/api/leads/:id', (req, res) => {
   console.log('Запрос на удаление заказа:', req.params);
   const { id } = req.params;
 
-  // Удаляем заказ из ordersByCourier для всех тегов
   for (const tag in ordersByCourier) {
-      const initialLength = ordersByCourier[tag].length;
-      ordersByCourier[tag] = ordersByCourier[tag].filter(lead => lead.id !== parseInt(id));
-      if (ordersByCourier[tag].length < initialLength) {
-          console.log(`Заказ ${id} удалён из ordersByCourier для тега ${tag}`);
-          saveOrdersToFile();
-          if (clientsByTag[tag] && clientsByTag[tag].length > 0) {
-              clientsByTag[tag].forEach(client => {
-                  if (client.readyState === WebSocket.OPEN) {
-                      client.send(JSON.stringify({ type: 'orders', data: ordersByCourier[tag] }));
-                      console.log(`Отправлен обновлённый список заказов для тега ${tag}`);
-                  }
-              });
+    const initialLength = ordersByCourier[tag].length;
+    ordersByCourier[tag] = ordersByCourier[tag].filter(lead => lead.id !== parseInt(id));
+    if (ordersByCourier[tag].length < initialLength) {
+      console.log(`Заказ ${id} удалён из ordersByCourier для тега ${tag}`);
+      saveOrdersToFile();
+      if (clientsByTag[tag] && clientsByTag[tag].length > 0) {
+        clientsByTag[tag].forEach(client => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: 'orders', data: ordersByCourier[tag] }));
+            console.log(`Отправлен обновлённый список заказов для тега ${tag}`);
           }
+        });
       }
+    }
   }
 
   res.status(200).json({ message: `Заказ ${id} удалён из списка` });

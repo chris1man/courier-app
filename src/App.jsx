@@ -75,25 +75,32 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeMenu, setActiveMenu] = useState(null);
+  const wsRef = useRef(null);
+  const reconnectIntervalRef = useRef(null);
 
-  useEffect(() => {
-    const fetchInitialOrders = async () => {
-      try {
-        const response = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/leads?tag=${courierTag}`);
-        setOrders(response.data._embedded.leads || []);
-        setLoading(false);
-      } catch (error) {
-        console.error('Ошибка начальной загрузки заказов:', error);
-        setLoading(false);
-      }
-    };
-    fetchInitialOrders();
+  const fetchOrders = async () => {
+    try {
+      const response = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/leads?tag=${courierTag}`);
+      setOrders(response.data._embedded.leads || []);
+      setLoading(false);
+    } catch (error) {
+      console.error('Ошибка начальной загрузки заказов:', error);
+      setLoading(false);
+    }
+  };
+
+  const connectWebSocket = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      return; // Не подключаемся, если уже есть активное соединение
+    }
 
     console.log(`Попытка подключения к WebSocket: wss://makiapp.ru/ws?tag=${courierTag}`);
     const ws = new WebSocket(`wss://makiapp.ru/ws?tag=${courierTag}`);
+    wsRef.current = ws;
 
     ws.onopen = () => {
       console.log('WebSocket подключён');
+      fetchOrders(); // Синхронизация заказов при подключении
     };
 
     ws.onmessage = (event) => {
@@ -112,17 +119,44 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
 
     ws.onerror = (error) => {
       console.error('Ошибка WebSocket:', error);
-      setLoading(false);
     };
 
     ws.onclose = () => {
       console.log('WebSocket отключён');
-      setLoading(false);
+      wsRef.current = null;
+      // Переподключение начнётся через интервал
+    };
+  };
+
+  useEffect(() => {
+    fetchOrders();
+    connectWebSocket();
+
+    // Периодическая проверка состояния WebSocket
+    reconnectIntervalRef.current = setInterval(() => {
+      if (document.visibilityState === 'visible' && (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED)) {
+        connectWebSocket();
+      }
+    }, 2000); // Проверка каждые 2 секунды
+
+    // Обработка видимости страницы
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+          connectWebSocket();
+        }
+      }
     };
 
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
-      console.log('Закрытие WebSocket');
-      ws.close();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      clearInterval(reconnectIntervalRef.current);
+      if (wsRef.current) {
+        console.log('Закрытие WebSocket');
+        wsRef.current.close();
+      }
     };
   }, [courierTag]);
 
@@ -155,13 +189,12 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
     localStorage.removeItem('courierTag');
   };
 
-  const toggleMenu = (menuId) => {
-    setActiveMenu(activeMenu === menuId ? null : menuId);
+  const handleRefresh = () => {
+    window.location.reload();
   };
 
-  const getCustomFieldValue = (fields, fieldId) => {
-    const field = fields?.find(f => f.field_id === fieldId);
-    return field?.values[0]?.value || '';
+  const toggleMenu = (menuId) => {
+    setActiveMenu(activeMenu === menuId ? null : menuId);
   };
 
   if (loading) {
@@ -172,7 +205,15 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
     <div className="orders-container">
       <div className="header-container">
         <h2>Ваши заказы</h2>
-        <div className="menu-wrapper">
+        <div className="header-buttons">
+          <button className="refresh-button" onClick={handleRefresh}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M23 4v6h-6" />
+              <path d="M1 20v-6h6" />
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
+              <path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14" />
+            </svg>
+          </button>
           <button className="menu-button" onClick={() => toggleMenu('header')}>
             ⋮
           </button>
@@ -187,40 +228,71 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
         <p>Нет доступных заказов</p>
       ) : (
         <ul className="order-list">
-          {orders.map((order) => {
-            const phone = getCustomFieldValue(order.custom_fields_values, 293293);
-            const formattedPhone = phone.startsWith('7') ? `+${phone}` : phone.startsWith('8') ? phone : phone;
-            return (
-              <li key={order.id} className="order-item">
-                <div>
-                  <p><strong>Номер с сайта:</strong> {order.id}</p>
-                  <p><strong>Номер заказчика:</strong> {order._embedded?.contacts[0]?.id || 'Не указан'}</p>
-                  <p><strong>Дата доставки:</strong> {getCustomFieldValue(order.custom_fields_values, 1037323)}</p>
-                  <p><strong>Время доставки:</strong> {getCustomFieldValue(order.custom_fields_values, 293299)}</p>
-                  <p><strong>Адрес:</strong> {getCustomFieldValue(order.custom_fields_values, 293241)}</p>
-                  <p><strong>Номер телефона получателя:</strong> <a href={`tel:${formattedPhone}`}>{formattedPhone}</a></p>
-                  <p><strong>Имя получателя:</strong> {getCustomFieldValue(order.custom_fields_values, 1018520)}</p>
-                  <p><strong>Сумма заказа:</strong> {order.price} ₽</p>
-                  <p><strong>Итог оплаты:</strong> {getCustomFieldValue(order.custom_fields_values, 1047841)}</p>
-                  <p><strong>Комментарий к доставке:</strong> {getCustomFieldValue(order.custom_fields_values, 1035985)}</p>
-                  <SwipeSlider orderId={order.id} onDeliver={handleDeliver} />
-                </div>
-                <div className="order-item-menu">
-                  <button className="menu-button" onClick={() => toggleMenu(order.id)}>
-                    ⋮
-                  </button>
-                  {activeMenu === order.id && (
-                    <div className="menu-dropdown">
-                      <button onClick={() => handleDelete(order.id)}>Удалить</button>
-                    </div>
-                  )}
-                </div>
-              </li>
-            );
-          })}
+          {orders.map((order) => (
+            <OrderItem 
+              key={order.id} 
+              order={order} 
+              onDeliver={handleDeliver} 
+              onDelete={handleDelete} 
+              activeMenu={activeMenu} 
+              toggleMenu={toggleMenu} 
+            />
+          ))}
         </ul>
       )}
     </div>
+  );
+}
+
+function OrderItem({ order, onDeliver, onDelete, activeMenu, toggleMenu }) {
+  const getCustomFieldValue = (fields, fieldId) => {
+    const field = fields?.find(f => f.field_id === fieldId);
+    return field?.values[0]?.value || '';
+  };
+
+  const formatAddress = (address) => {
+    const normalizedAddress = address.toLowerCase();
+    const hasTomsk = normalizedAddress.includes('томск');
+    const fullAddress = hasTomsk ? address : `г. Томск, ${address}`;
+    return encodeURIComponent(fullAddress);
+  };
+
+  const phone = getCustomFieldValue(order.custom_fields_values, 293293);
+  const formattedPhone = phone.startsWith('7') ? `+${phone}` : phone.startsWith('8') ? phone : phone;
+  const rawAddress = getCustomFieldValue(order.custom_fields_values, 293241);
+  const address = formatAddress(rawAddress);
+  const contactPhone = order.contact?.phone || 'Не указан';
+
+  return (
+    <li className="order-item">
+      <div>
+        <p><strong>Номер с сайта:</strong> {order.id}</p>
+        <p><strong>Номер заказчика:</strong> <a href={`tel:${contactPhone}`}>{contactPhone}</a></p>
+        <p><strong>Дата доставки:</strong> {getCustomFieldValue(order.custom_fields_values, 1037323)}</p>
+        <p><strong>Время доставки:</strong> {getCustomFieldValue(order.custom_fields_values, 293299)}</p>
+        <p><strong>Адрес:</strong> {rawAddress.includes('Томск') ? rawAddress : `г. Томск, ${rawAddress}`}</p>
+        <div className="map-buttons">
+          <a href={`https://yandex.ru/maps/?text=${address}`} target="_blank" rel="noopener noreferrer" className="map-button">Яндекс</a>
+          <a href={`https://2gis.ru/search/${address}`} target="_blank" rel="noopener noreferrer" className="map-button">2GIS</a>
+        </div>
+        <p><strong>Номер телефона получателя:</strong> <a href={`tel:${formattedPhone}`}>{formattedPhone}</a></p>
+        <p><strong>Имя получателя:</strong> {getCustomFieldValue(order.custom_fields_values, 1018520)}</p>
+        <p><strong>Сумма заказа:</strong> {order.price} ₽</p>
+        <p><strong>Итог оплаты:</strong> {getCustomFieldValue(order.custom_fields_values, 1047841)}</p>
+        <p><strong>Комментарий к доставке:</strong> {getCustomFieldValue(order.custom_fields_values, 1035985)}</p>
+        <SwipeSlider orderId={order.id} onDeliver={onDeliver} />
+      </div>
+      <div className="order-item-menu">
+        <button className="menu-button" onClick={() => toggleMenu(order.id)}>
+          ⋮
+        </button>
+        {activeMenu === order.id && (
+          <div className="menu-dropdown">
+            <button onClick={() => onDelete(order.id)}>Удалить</button>
+          </div>
+        )}
+      </div>
+    </li>
   );
 }
 
