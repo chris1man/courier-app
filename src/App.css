@@ -44,7 +44,7 @@
 }
 
 .login-form input:focus {
-  border-color: #e73a62; /* Заменяем синий */
+  border-color: #e73a62;
   box-shadow: 0 0 5px rgba(231, 58, 98, 0.3);
   outline: none;
 }
@@ -52,7 +52,7 @@
 .login-form button {
   width: 100%;
   padding: 0.9rem;
-  background: #e73a62; /* Заменяем синий */
+  background: #e73a62;
   color: #fff;
   border: none;
   border-radius: 6px;
@@ -63,7 +63,7 @@
 }
 
 .login-form button:hover {
-  background: #c32f52; /* Темнее #e73a62 */
+  background: #c32f52;
   transform: translateY(-2px);
 }
 
@@ -93,6 +93,12 @@
   position: relative;
 }
 
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .header-buttons {
   display: flex;
   align-items: center;
@@ -105,11 +111,34 @@
   margin: 0;
 }
 
+.connection-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.connection-indicator.connected {
+  background-color: #28a745; /* Зелёный */
+}
+
+.connection-indicator.connecting {
+  background-color: #ffc107; /* Жёлтый */
+}
+
+.connection-indicator.disconnected {
+  background-color: #dc3545; /* Красный */
+}
+
+.connection-indicator.error {
+  background-color: #6c757d; /* Серый */
+}
+
 .refresh-button {
   background: none;
   border: none;
   cursor: pointer;
-  padding: 0.75rem; /* Уменьшаем для соответствия трём точкам */
+  padding: 0.75rem;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -117,12 +146,12 @@
 }
 
 .refresh-button svg {
-  width: 20px; /* Уменьшаем иконку */
+  width: 20px;
   height: 20px;
 }
 
 .refresh-button:hover {
-  color: #e73a62; /* Заменяем синий */
+  color: #e73a62;
 }
 
 .menu-wrapper {
@@ -146,6 +175,10 @@
   box-sizing: border-box;
 }
 
+.order-item.animate-appear {
+  animation: slideUp 0.5s ease-out;
+}
+
 .order-item p {
   margin: 0.3rem 0;
   font-family: 'Montserrat', sans-serif;
@@ -159,11 +192,11 @@
 }
 
 .order-item a {
-  color: #e73a62; /* Заменяем синий */
+  color: #e73a62;
 }
 
 .order-item a:hover {
-  color: #c32f52; /* Темнее #e73a62 */
+  color: #c32f52;
 }
 
 .map-buttons {
@@ -176,10 +209,10 @@
 .map-button {
   display: inline-block;
   padding: 0.6rem 1.2rem;
-  background-color: rgba(0, 0, 0, 0.05); /* Полупрозрачный фон */
+  background-color: rgba(0, 0, 0, 0.05);
   color: var(--text-color);
   text-decoration: none;
-  border: 1px solid #333; /* Тёмная граница */
+  border: 1px solid #333;
   border-radius: 6px;
   font-size: 1rem;
   font-family: 'Montserrat', sans-serif;
@@ -189,8 +222,8 @@
 }
 
 .map-button:hover {
-  background-color: rgba(0, 0, 0, 0.1); /* Лёгкий hover-эффект */
-  color: #e73a62; /* Акцентный цвет */
+  background-color: rgba(0, 0, 0, 0.1);
+  color: #e73a62;
 }
 
 /* Свайп */
@@ -299,7 +332,7 @@
   color: var(--text-color);
   font-size: 0.9rem;
   font-family: 'Montserrat', sans-serif;
-  transition: background-color 0.2s;
+  transition: background-color 0.3s;
 }
 
 .menu-dropdown button:hover {
@@ -318,6 +351,11 @@
 
 @keyframes slideIn {
   from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
   to { opacity: 1; transform: translateY(0); }
 }
 

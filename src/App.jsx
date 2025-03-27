@@ -5,28 +5,28 @@ import './App.css';
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [courierTag, setCourierTag] = useState(null);
+  const [courierTags, setCourierTags] = useState(null);
 
   useEffect(() => {
-    const storedTag = localStorage.getItem('courierTag');
-    if (storedTag) {
+    const storedTags = localStorage.getItem('courierTags');
+    if (storedTags) {
       setIsLoggedIn(true);
-      setCourierTag(storedTag);
+      setCourierTags(JSON.parse(storedTags));
     }
   }, []);
 
   if (!isLoggedIn) {
-    return <LoginPage onLogin={(tag) => {
+    return <LoginPage onLogin={(tags) => {
       setIsLoggedIn(true);
-      setCourierTag(tag);
-      localStorage.setItem('courierTag', tag);
+      setCourierTags(tags);
+      localStorage.setItem('courierTags', JSON.stringify(tags));
     }} />;
   }
 
   return <OrdersPage 
-    courierTag={courierTag} 
+    courierTags={courierTags} 
     setIsLoggedIn={setIsLoggedIn} 
-    setCourierTag={setCourierTag} 
+    setCourierTags={setCourierTags} 
   />;
 }
 
@@ -39,7 +39,7 @@ function LoginPage({ onLogin }) {
     try {
       const response = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/login`, { login, password });
       if (response.data.success) {
-        onLogin(response.data.tag);
+        onLogin(response.data.tags);
       } else {
         setError(response.data.message);
       }
@@ -71,75 +71,97 @@ function LoginPage({ onLogin }) {
   );
 }
 
-function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
+function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeMenu, setActiveMenu] = useState(null);
+  const [connectionStatus, setConnectionStatus] = useState('connecting');
   const wsRef = useRef(null);
   const reconnectIntervalRef = useRef(null);
 
   const fetchOrders = async () => {
     try {
-      const response = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/leads?tag=${courierTag}`);
-      setOrders(response.data._embedded.leads || []);
+      const response = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/leads?tag=${courierTags.join(',')}`);
+      const newOrders = response.data._embedded.leads || [];
+      setOrders(newOrders); // Полная замена списка
+      localStorage.setItem('cachedOrders', JSON.stringify(newOrders));
       setLoading(false);
     } catch (error) {
       console.error('Ошибка начальной загрузки заказов:', error);
       setLoading(false);
+      setConnectionStatus('error');
     }
   };
 
   const connectWebSocket = () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      return; // Не подключаемся, если уже есть активное соединение
+      return;
     }
 
-    console.log(`Попытка подключения к WebSocket: wss://makiapp.ru/ws?tag=${courierTag}`);
-    const ws = new WebSocket(`wss://makiapp.ru/ws?tag=${courierTag}`);
+    console.log(`Попытка подключения к WebSocket: wss://makiapp.ru/ws?tags=${courierTags.join(',')}`);
+    setConnectionStatus('connecting');
+    const ws = new WebSocket(`wss://makiapp.ru/ws?tags=${courierTags.join(',')}`);
     wsRef.current = ws;
 
     ws.onopen = () => {
       console.log('WebSocket подключён');
-      fetchOrders(); // Синхронизация заказов при подключении
+      setConnectionStatus('connected');
+      fetchOrders();
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send('ping');
+        }
+      }, 10000);
+      ws.pingInterval = pingInterval;
     };
 
     ws.onmessage = (event) => {
       console.log('Получено сообщение от WebSocket:', event.data);
+      if (event.data === 'pong') return;
       try {
         const message = JSON.parse(event.data);
         if (message.type === 'orders') {
           console.log('Обновление заказов:', message.data);
-          setOrders(message.data || []);
+          setOrders(message.data || []); // Полная замена списка
+          localStorage.setItem('cachedOrders', JSON.stringify(message.data || []));
           setLoading(false);
         }
       } catch (error) {
         console.error('Ошибка парсинга сообщения WebSocket:', error);
+        setConnectionStatus('error');
       }
     };
 
     ws.onerror = (error) => {
       console.error('Ошибка WebSocket:', error);
+      setConnectionStatus('error');
     };
 
     ws.onclose = () => {
       console.log('WebSocket отключён');
+      setConnectionStatus('disconnected');
       wsRef.current = null;
-      // Переподключение начнётся через интервал
+      clearInterval(ws.pingInterval);
     };
   };
 
   useEffect(() => {
-    fetchOrders();
+    const cachedOrders = localStorage.getItem('cachedOrders');
+    if (cachedOrders) {
+      setOrders(JSON.parse(cachedOrders));
+      setLoading(false);
+    } else {
+      fetchOrders();
+    }
+
     connectWebSocket();
 
-    // Периодическая проверка состояния WebSocket
     reconnectIntervalRef.current = setInterval(() => {
       if (document.visibilityState === 'visible' && (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED)) {
         connectWebSocket();
       }
-    }, 2000); // Проверка каждые 2 секунды
+    }, 1000);
 
-    // Обработка видимости страницы
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
@@ -158,12 +180,13 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
         wsRef.current.close();
       }
     };
-  }, [courierTag]);
+  }, [courierTags]);
 
   const handleDeliver = async (id) => {
     try {
       await axios.patch(`${import.meta.env.VITE_BACKEND_URL}/leads/${id}`, { status_id: config.DELIVERED_STATUS_ID });
       setOrders(orders.filter(order => order.id !== id));
+      localStorage.setItem('cachedOrders', JSON.stringify(orders.filter(order => order.id !== id)));
       alert(`Заказ ${id} доставлен и удалён`);
     } catch (error) {
       console.error('Ошибка при доставке заказа:', error);
@@ -175,6 +198,7 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
     try {
       await axios.delete(`${import.meta.env.VITE_BACKEND_URL}/leads/${id}`);
       setOrders(orders.filter(order => order.id !== id));
+      localStorage.setItem('cachedOrders', JSON.stringify(orders.filter(order => order.id !== id)));
       alert(`Заказ ${id} удалён`);
     } catch (error) {
       console.error('Ошибка при удалении заказа:', error);
@@ -185,8 +209,8 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
   const handleLogout = () => {
     setOrders([]);
     setIsLoggedIn(false);
-    setCourierTag(null);
-    localStorage.removeItem('courierTag');
+    setCourierTags(null);
+    localStorage.removeItem('courierTags');
   };
 
   const handleRefresh = () => {
@@ -197,14 +221,17 @@ function OrdersPage({ courierTag, setIsLoggedIn, setCourierTag }) {
     setActiveMenu(activeMenu === menuId ? null : menuId);
   };
 
-  if (loading) {
+  if (loading && orders.length === 0) {
     return <div className="loading">Загрузка...</div>;
   }
 
   return (
     <div className="orders-container">
       <div className="header-container">
-        <h2>Ваши заказы</h2>
+        <div className="header-title">
+          <h2>Ваши заказы</h2>
+          <span className={`connection-indicator ${connectionStatus}`}></span>
+        </div>
         <div className="header-buttons">
           <button className="refresh-button" onClick={handleRefresh}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -264,7 +291,7 @@ function OrderItem({ order, onDeliver, onDelete, activeMenu, toggleMenu }) {
   const contactPhone = order.contact?.phone || 'Не указан';
 
   return (
-    <li className="order-item">
+    <li className="order-item animate-appear">
       <div>
         <p><strong>Номер с сайта:</strong> {order.id}</p>
         <p><strong>Номер заказчика:</strong> <a href={`tel:${contactPhone}`}>{contactPhone}</a></p>
@@ -288,6 +315,7 @@ function OrderItem({ order, onDeliver, onDelete, activeMenu, toggleMenu }) {
         </button>
         {activeMenu === order.id && (
           <div className="menu-dropdown">
+            <button onClick={() => onDeliver(order.id)}>Доставлено</button>
             <button onClick={() => onDelete(order.id)}>Удалить</button>
           </div>
         )}

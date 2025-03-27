@@ -1,9 +1,8 @@
 {
-    "danil": {"password": "danil123", "tag": "111, данил"},
-    "katya": {"password": "994xo5", "tag": "катя"},
-    "sasha": {"password": "nskh5l", "tag": "саша"},
-    "pasha": {"password": "j6e3im", "tag": "21"},
-    "tim": {"password": "zstif0", "tag": "тимур"},
-    "vladimir": {"password": "gurb99", "tag": "владимир"},
-    "alex": {"password": "finef3", "tag": "леша"}
-}
+    "danil": {"password": "danil123", "tags": ["данил", "111"]},
+    "katya": {"password": "c2oa1d", "tag": "катя"},
+    "sasha": {"password": "uzfyf6", "tag": "саша"},
+    "pasha": {"password": "5f3wu0", "tag": "21"},
+    "timur": {"password": "xhr81g", "tag": "тимур"},
+    "vladimir": {"password": "mmpk32", "tag": "владимир"}
+  }
