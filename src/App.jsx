@@ -207,12 +207,26 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
     }
   };
 
+  const updateOrderSort = async (newOrders) => {
+    try {
+      const orderIds = newOrders.map(order => order.id);
+      await axios.post(`${import.meta.env.VITE_BACKEND_URL}/orders/sort`, {
+        tags: courierTags,
+        orderIds
+      });
+      console.log('Порядок заказов отправлен на бэкенд');
+    } catch (error) {
+      console.error('Ошибка при отправке порядка заказов:', error);
+    }
+  };
+
   const moveOrderUp = (index) => {
     if (index === 0) return;
     const newOrders = [...orders];
     [newOrders[index - 1], newOrders[index]] = [newOrders[index], newOrders[index - 1]];
     setOrders(newOrders);
     localStorage.setItem('cachedOrders', JSON.stringify(newOrders));
+    updateOrderSort(newOrders);
   };
 
   const moveOrderDown = (index) => {
@@ -221,6 +235,7 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
     [newOrders[index], newOrders[index + 1]] = [newOrders[index + 1], newOrders[index]];
     setOrders(newOrders);
     localStorage.setItem('cachedOrders', JSON.stringify(newOrders));
+    updateOrderSort(newOrders);
   };
 
   const handleLogout = () => {
