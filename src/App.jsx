@@ -79,6 +79,7 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
   const [showInfo, setShowInfo] = useState(false);
   const wsRef = useRef(null);
   const reconnectIntervalRef = useRef(null);
+  const geoWatchId = useRef(null);
 
   const fetchOrders = async () => {
     try {
@@ -94,10 +95,58 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
     }
   };
 
-  const connectWebSocket = () => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      return;
+  const sendLocation = (ws) => {
+    if (navigator.geolocation && ws.readyState === WebSocket.OPEN) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          ws.send(JSON.stringify({
+            type: 'location',
+            data: { tags: courierTags, lat: latitude, lng: longitude }
+          }));
+          console.log('Отправлены координаты:', { lat: latitude, lng: longitude });
+        },
+        (error) => console.error('Ошибка геолокации:', error),
+        { enableHighAccuracy: true, timeout: 5000 }
+      );
     }
+  };
+
+  const startGeoTracking = (ws) => {
+    if (!navigator.geolocation) return;
+
+    const geoPermission = localStorage.getItem('geoPermission');
+    if (geoPermission === 'granted' && !geoWatchId.current) {
+      geoWatchId.current = navigator.geolocation.watchPosition(
+        (position) => sendLocation(ws),
+        (error) => console.error('Ошибка watchPosition:', error),
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+      );
+    } else if (geoPermission !== 'denied' && !geoWatchId.current) {
+      navigator.permissions.query({ name: 'geolocation' }).then((result) => {
+        if (result.state === 'granted') {
+          localStorage.setItem('geoPermission', 'granted');
+          startGeoTracking(ws);
+        } else if (result.state === 'prompt') {
+          navigator.geolocation.getCurrentPosition(
+            () => {
+              localStorage.setItem('geoPermission', 'granted');
+              startGeoTracking(ws);
+            },
+            (error) => {
+              console.error('Геолокация отклонена:', error);
+              localStorage.setItem('geoPermission', 'denied');
+            }
+          );
+        } else {
+          localStorage.setItem('geoPermission', 'denied');
+        }
+      });
+    }
+  };
+
+  const connectWebSocket = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
 
     console.log(`Попытка подключения к WebSocket: wss://makiapp.ru/ws?tags=${courierTags.join(',')}`);
     setConnectionStatus('connecting');
@@ -111,9 +160,11 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
       const pingInterval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send('ping');
+          sendLocation(ws);
         }
       }, 10000);
       ws.pingInterval = pingInterval;
+      startGeoTracking(ws);
     };
 
     ws.onmessage = (event) => {
@@ -122,7 +173,6 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
       try {
         const message = JSON.parse(event.data);
         if (message.type === 'orders') {
-          console.log('Обновление заказов:', message.data);
           setOrders(message.data || []);
           localStorage.setItem('cachedOrders', JSON.stringify(message.data || []));
           setLoading(false);
@@ -143,6 +193,10 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
       setConnectionStatus('disconnected');
       wsRef.current = null;
       clearInterval(ws.pingInterval);
+      if (geoWatchId.current) {
+        navigator.geolocation.clearWatch(geoWatchId.current);
+        geoWatchId.current = null;
+      }
     };
   };
 
@@ -180,43 +234,56 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
         console.log('Закрытие WebSocket');
         wsRef.current.close();
       }
+      if (geoWatchId.current) {
+        navigator.geolocation.clearWatch(geoWatchId.current);
+        geoWatchId.current = null;
+      }
     };
   }, [courierTags]);
 
   const handleDeliver = async (id) => {
     try {
-      await axios.patch(`${import.meta.env.VITE_BACKEND_URL}/leads/${id}`, { status_id: config.DELIVERED_STATUS_ID });
+      console.log(`Отправка PATCH-запроса для доставки заказа ${id}`);
+      const response = await axios.patch(`${import.meta.env.VITE_BACKEND_URL}/leads/${id}`, { status_id: config.DELIVERED_STATUS_ID });
+      console.log('Ответ от сервера:', response.data);
       setOrders(orders.filter(order => order.id !== id));
       localStorage.setItem('cachedOrders', JSON.stringify(orders.filter(order => order.id !== id)));
       alert(`Заказ ${id} доставлен и удалён`);
     } catch (error) {
-      console.error('Ошибка при доставке заказа:', error);
-      alert('Не удалось отметить заказ как доставленный');
+      console.error('Ошибка при доставке заказа:', error.response?.data || error.message);
+      alert(`Не удалось отметить заказ как доставленный: ${error.response?.data?.error || error.message}`);
     }
   };
 
   const handleDelete = async (id) => {
     try {
-      await axios.delete(`${import.meta.env.VITE_BACKEND_URL}/leads/${id}`);
+      console.log(`Отправка DELETE-запроса для удаления заказа ${id}`);
+      const response = await axios.delete(`${import.meta.env.VITE_BACKEND_URL}/leads/${id}`);
+      console.log('Ответ от сервера:', response.data);
       setOrders(orders.filter(order => order.id !== id));
       localStorage.setItem('cachedOrders', JSON.stringify(orders.filter(order => order.id !== id)));
       alert(`Заказ ${id} удалён`);
     } catch (error) {
-      console.error('Ошибка при удалении заказа:', error);
-      alert('Не удалось удалить заказ');
+      console.error('Ошибка при удалении заказа:', error.response?.data || error.message);
+      alert(`Не удалось удалить заказ: ${error.response?.data?.error || error.message}`);
     }
   };
 
   const updateOrderSort = async (newOrders) => {
     try {
       const orderIds = newOrders.map(order => order.id);
-      await axios.post(`${import.meta.env.VITE_BACKEND_URL}/orders/sort`, {
+      const response = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/orders/sort`, {
         tags: courierTags,
         orderIds
       });
-      console.log('Порядок заказов отправлен на бэкенд');
+      if (response.status === 200) {
+        console.log('Порядок успешно сохранён:', response.data.message);
+        setOrders(newOrders);
+        localStorage.setItem('cachedOrders', JSON.stringify(newOrders));
+      }
     } catch (error) {
       console.error('Ошибка при отправке порядка заказов:', error);
+      alert('Не удалось сохранить порядок');
     }
   };
 
@@ -243,6 +310,7 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
     setIsLoggedIn(false);
     setCourierTags(null);
     localStorage.removeItem('courierTags');
+    localStorage.removeItem('geoPermission');
   };
 
   const handleRefresh = () => {
@@ -413,8 +481,8 @@ function SwipeSlider({ orderId, onDeliver }) {
     return `rgb(${r}, ${g}, ${b})`;
   };
 
-  const startColor = [51, 51, 51]; // #333
-  const endColor = [40, 167, 69]; // #28a745
+  const startColor = [51, 51, 51];
+  const endColor = [40, 167, 69];
   const progress = Math.min(position / maxSwipe, 1);
   const backgroundColor = interpolateColor(startColor, endColor, progress);
 

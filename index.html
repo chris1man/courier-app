@@ -7,8 +7,6 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="theme-color" content="#e73a62" />
     <title>Courier App</title>
-
-    <!-- Favicon -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96x96.png" />
@@ -20,5 +18,19 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').then(reg => {
+          console.log('Service Worker зарегистрирован:', reg);
+          const storedTags = localStorage.getItem('courierTags');
+          if (storedTags) {
+            navigator.serviceWorker.controller?.postMessage({
+              type: 'init',
+              tags: JSON.parse(storedTags)
+            });
+          }
+        }).catch(err => console.error('Ошибка регистрации Service Worker:', err));
+      }
+    </script>
   </body>
 </html>

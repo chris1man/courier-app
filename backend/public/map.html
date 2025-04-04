@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Карта курьеров</title>
+  <link rel="stylesheet" href="/leaflet.css" />
+  <style>
+    body { margin: 0; padding: 0; }
+    #map { height: 100vh; width: 100vw; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script src="/leaflet.js"></script>
+  <script>
+    const map = L.map('map').setView([56.4846, 84.9476], 12); // Томск
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    const markers = {};
+    const colors = ['red', 'blue', 'green', 'orange', 'purple', 'darkred', 'darkblue', 'darkgreen'];
+    let colorIndex = 0;
+
+    function getCourierIcon(tag) {
+      const color = colors[colorIndex % colors.length];
+      colorIndex++;
+      return L.divIcon({
+        html: `<div style="background-color: ${color}; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white;"></div>`,
+        className: 'courier-icon',
+        iconSize: [20, 20],
+        iconAnchor: [10, 10]
+      });
+    }
+
+    const ws = new WebSocket('wss://makiapp.ru/ws?type=map');
+
+    ws.onopen = () => {
+      console.log('Подключено к WebSocket для карты');
+      setInterval(() => ws.send('ping'), 10000);
+    };
+
+    ws.onmessage = (event) => {
+      if (event.data === 'pong') return;
+      const { type, data } = JSON.parse(event.data);
+      if (type === 'locations') {
+        Object.keys(markers).forEach(tag => {
+          if (!data[tag]) {
+            map.removeLayer(markers[tag]);
+            delete markers[tag];
+          }
+        });
+        Object.entries(data).forEach(([tag, { lat, lng }]) => {
+          if (markers[tag]) {
+            markers[tag].setLatLng([lat, lng]);
+          } else {
+            markers[tag] = L.marker([lat, lng], { icon: getCourierIcon(tag) })
+              .addTo(map)
+              .bindPopup(`Курьер: ${tag}`);
+          }
+        });
+      }
+    };
+
+    ws.onerror = (error) => console.error('Ошибка WebSocket:', error);
+    ws.onclose = () => console.log('WebSocket для карты отключён');
+  </script>
+</body>
+</html>
