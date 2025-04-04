@@ -58,6 +58,16 @@ const saveOrdersToFile = () => {
 const clientsByTag = {};
 const courierLocations = {};
 
+const courierColors = {
+  "danil": "red",
+  "katya": "blue",
+  "sasha": "green",
+  "pasha": "orange",
+  "timur": "purple",
+  "vladimir": "darkred",
+  "alex": "darkblue"
+};
+
 wss.on('connection', (ws, req) => {
   console.log('Новое WebSocket-соединение:', req.url);
   const urlParams = new URLSearchParams(req.url.split('?')[1]);
@@ -67,9 +77,21 @@ wss.on('connection', (ws, req) => {
 
   if (isMap) {
     ws.on('message', (message) => {
-      if (message === 'ping') ws.send('pong');
+      const msgString = message.toString();
+      if (msgString === 'ping') {
+        ws.send('pong');
+        return;
+      }
     });
     ws.send(JSON.stringify({ type: 'locations', data: courierLocations }));
+    ws.send(JSON.stringify({ 
+      type: 'couriers', 
+      data: Object.keys(couriers).map(name => ({
+        name,
+        tags: couriers[name].tags || [couriers[name].tag || name], // Теги курьера
+        color: courierColors[name] || 'gray'
+      }))
+    }));
   } else if (tags.length > 0) {
     tags.forEach(tag => {
       clientsByTag[tag] = clientsByTag[tag] || [];
@@ -82,12 +104,13 @@ wss.on('connection', (ws, req) => {
     ws.send(JSON.stringify({ type: 'orders', data: uniqueOrders }));
 
     ws.on('message', (message) => {
-      if (message === 'ping') {
+      const msgString = message.toString();
+      if (msgString === 'ping') {
         ws.send('pong');
         return;
       }
       try {
-        const data = JSON.parse(message);
+        const data = JSON.parse(msgString);
         if (data.type === 'location') {
           const { tags: locationTags, lat, lng } = data.data;
           if (!locationTags || !Array.isArray(locationTags)) throw new Error('Неверный формат тегов в сообщении location');

@@ -77,6 +77,7 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
   const [activeMenu, setActiveMenu] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [showInfo, setShowInfo] = useState(false);
+  const [locationEnabled, setLocationEnabled] = useState(false); // Новый статус геолокации
   const wsRef = useRef(null);
   const reconnectIntervalRef = useRef(null);
   const geoWatchId = useRef(null);
@@ -105,44 +106,86 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
             data: { tags: courierTags, lat: latitude, lng: longitude }
           }));
           console.log('Отправлены координаты:', { lat: latitude, lng: longitude });
+          setLocationEnabled(true); // Успешная отправка подтверждает включённую геолокацию
         },
-        (error) => console.error('Ошибка геолокации:', error),
+        (error) => {
+          console.error('Ошибка геолокации:', error);
+          setLocationEnabled(false);
+        },
         { enableHighAccuracy: true, timeout: 5000 }
       );
+    } else {
+      setLocationEnabled(false);
     }
   };
 
   const startGeoTracking = (ws) => {
-    if (!navigator.geolocation) return;
+    if (!navigator.geolocation) {
+      console.log('Геолокация не поддерживается устройством');
+      setLocationEnabled(false);
+      return;
+    }
 
     const geoPermission = localStorage.getItem('geoPermission');
-    if (geoPermission === 'granted' && !geoWatchId.current) {
+    if (geoPermission === 'granted') {
       geoWatchId.current = navigator.geolocation.watchPosition(
         (position) => sendLocation(ws),
-        (error) => console.error('Ошибка watchPosition:', error),
+        (error) => {
+          console.error('Ошибка watchPosition:', error);
+          setLocationEnabled(false);
+        },
         { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
       );
-    } else if (geoPermission !== 'denied' && !geoWatchId.current) {
-      navigator.permissions.query({ name: 'geolocation' }).then((result) => {
-        if (result.state === 'granted') {
+      console.log('Запущено отслеживание геопозиции с ID:', geoWatchId.current);
+      sendLocation(ws); // Немедленная отправка координат
+    } else if (!geoPermission) {
+      navigator.geolocation.getCurrentPosition(
+        () => {
           localStorage.setItem('geoPermission', 'granted');
-          startGeoTracking(ws);
-        } else if (result.state === 'prompt') {
-          navigator.geolocation.getCurrentPosition(
-            () => {
-              localStorage.setItem('geoPermission', 'granted');
-              startGeoTracking(ws);
-            },
+          console.log('Разрешение на геолокацию получено');
+          geoWatchId.current = navigator.geolocation.watchPosition(
+            (position) => sendLocation(ws),
             (error) => {
-              console.error('Геолокация отклонена:', error);
-              localStorage.setItem('geoPermission', 'denied');
-            }
+              console.error('Ошибка watchPosition:', error);
+              setLocationEnabled(false);
+            },
+            { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
           );
-        } else {
+          console.log('Запущено отслеживание геопозиции с ID:', geoWatchId.current);
+          sendLocation(ws); // Немедленная отправка координат
+        },
+        (error) => {
+          console.error('Геолокация отклонена:', error);
           localStorage.setItem('geoPermission', 'denied');
-        }
-      });
+          setLocationEnabled(false);
+        },
+        { enableHighAccuracy: true, timeout: 5000 }
+      );
+    } else {
+      setLocationEnabled(false); // Если geoPermission === 'denied'
     }
+  };
+
+  const requestLocationPermission = () => {
+    if (!navigator.geolocation) {
+      console.log('Геолокация не поддерживается устройством');
+      setLocationEnabled(false);
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      () => {
+        localStorage.setItem('geoPermission', 'granted');
+        console.log('Разрешение на геолокацию получено вручную');
+        startGeoTracking(wsRef.current);
+      },
+      (error) => {
+        console.error('Геолокация отклонена:', error);
+        localStorage.setItem('geoPermission', 'denied');
+        setLocationEnabled(false);
+      },
+      { enableHighAccuracy: true, timeout: 5000 }
+    );
   };
 
   const connectWebSocket = () => {
@@ -356,25 +399,32 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
           )}
         </div>
       </div>
-      {orders.length === 0 ? (
-        <p>Нет доступных заказов</p>
+      {locationEnabled ? (
+        orders.length === 0 ? (
+          <p>Нет доступных заказов</p>
+        ) : (
+          <ul className="order-list">
+            {orders.map((order, index) => (
+              <OrderItem 
+                key={order.id} 
+                order={order} 
+                index={index} 
+                totalOrders={orders.length}
+                onDeliver={handleDeliver} 
+                onDelete={handleDelete} 
+                onMoveUp={moveOrderUp}
+                onMoveDown={moveOrderDown}
+                activeMenu={activeMenu} 
+                toggleMenu={toggleMenu} 
+              />
+            ))}
+          </ul>
+        )
       ) : (
-        <ul className="order-list">
-          {orders.map((order, index) => (
-            <OrderItem 
-              key={order.id} 
-              order={order} 
-              index={index} 
-              totalOrders={orders.length}
-              onDeliver={handleDeliver} 
-              onDelete={handleDelete} 
-              onMoveUp={moveOrderUp}
-              onMoveDown={moveOrderDown}
-              activeMenu={activeMenu} 
-              toggleMenu={toggleMenu} 
-            />
-          ))}
-        </ul>
+        <div className="location-prompt">
+          <p>У вас отключено местоположение. Разрешить?</p>
+          <button onClick={requestLocationPermission}>Разрешить</button>
+        </div>
       )}
       {showInfo && (
         <div className="info-modal">

@@ -8,24 +8,28 @@
   <style>
     body { margin: 0; padding: 0; }
     #map { height: 100vh; width: 100vw; }
+    .legend { position: absolute; top: 10px; left: 10px; background: white; padding: 10px; border: 1px solid #ccc; z-index: 1000; }
+    .legend-item { display: flex; align-items: center; margin-bottom: 5px; }
+    .legend-color { width: 20px; height: 20px; border-radius: 50%; margin-right: 10px; }
   </style>
 </head>
 <body>
   <div id="map"></div>
+  <div id="legend" class="legend"></div>
   <script src="/leaflet.js"></script>
   <script>
-    const map = L.map('map').setView([56.4846, 84.9476], 12); // Томск
+    const savedCenter = JSON.parse(localStorage.getItem('mapCenter')) || [56.4846, 84.9476];
+    const savedZoom = parseInt(localStorage.getItem('mapZoom')) || 12;
+    const map = L.map('map').setView(savedCenter, savedZoom);
+
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       attribution: '© OpenStreetMap contributors'
     }).addTo(map);
 
     const markers = {};
-    const colors = ['red', 'blue', 'green', 'orange', 'purple', 'darkred', 'darkblue', 'darkgreen'];
-    let colorIndex = 0;
+    let couriers = {}; // { tag: { name, color } }
 
-    function getCourierIcon(tag) {
-      const color = colors[colorIndex % colors.length];
-      colorIndex++;
+    function getCourierIcon(color) {
       return L.divIcon({
         html: `<div style="background-color: ${color}; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white;"></div>`,
         className: 'courier-icon',
@@ -33,6 +37,23 @@
         iconAnchor: [10, 10]
       });
     }
+
+    function updateLegend() {
+      const legend = document.getElementById('legend');
+      legend.innerHTML = '';
+      Object.values(couriers).forEach(({ name, color }) => {
+        const item = document.createElement('div');
+        item.className = 'legend-item';
+        item.innerHTML = `<div class="legend-color" style="background-color: ${color};"></div>${name}`;
+        legend.appendChild(item);
+      });
+    }
+
+    map.on('moveend zoomend', () => {
+      const center = map.getCenter();
+      localStorage.setItem('mapCenter', JSON.stringify([center.lat, center.lng]));
+      localStorage.setItem('mapZoom', map.getZoom());
+    });
 
     const ws = new WebSocket('wss://makiapp.ru/ws?type=map');
 
@@ -52,14 +73,22 @@
           }
         });
         Object.entries(data).forEach(([tag, { lat, lng }]) => {
+          const courier = couriers[tag] || { name: tag, color: 'gray' };
           if (markers[tag]) {
             markers[tag].setLatLng([lat, lng]);
           } else {
-            markers[tag] = L.marker([lat, lng], { icon: getCourierIcon(tag) })
+            markers[tag] = L.marker([lat, lng], { icon: getCourierIcon(courier.color) })
               .addTo(map)
-              .bindPopup(`Курьер: ${tag}`);
+              .bindPopup(`Курьер: ${courier.name}`);
           }
         });
+      } else if (type === 'couriers') {
+        data.forEach(({ name, tags, color }) => {
+          tags.forEach(tag => {
+            couriers[tag] = { name, color };
+          });
+        });
+        updateLegend();
       }
     };
 
