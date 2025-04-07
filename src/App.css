@@ -483,3 +483,50 @@
 .location-prompt button:hover {
   background-color: #d32f54;
 }
+
+.no-orders {
+  text-align: center;
+  padding: 20px;
+}
+
+.no-orders p {
+  margin-bottom: 10px;
+  font-size: 16px;
+}
+
+.no-orders button {
+  padding: 10px 20px;
+  background-color: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.no-orders button:hover {
+  background-color: #45a049;
+}
+
+.return-options {
+  text-align: center;
+  padding: 20px;
+}
+
+.return-options p {
+  margin-bottom: 10px;
+  font-size: 16px;
+}
+
+.map-button {
+  display: inline-block;
+  padding: 10px 20px;
+  margin: 5px;
+  background-color: #333;
+  color: white;
+  text-decoration: none;
+  border-radius: 5px;
+}
+
+.map-button:hover {
+  background-color: #db1e1e;
+}

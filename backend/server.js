@@ -26,7 +26,8 @@ const AMOCRM_DOMAIN = process.env.AMOCRM_DOMAIN;
 const API_TOKEN = process.env.API_TOKEN;
 const CRON_SECRET = process.env.CRON_SECRET || 'default_secret';
 const PORT = process.env.PORT || 3001;
-const REQUEST_DELAY = 1000;
+const REQUEST_DELAY = 1000; // Задержка между запросами к API
+const QUEUE_DELAY = 5000;   // Задержка между запросами в очереди (5 секунд)
 
 const couriersFilePath = path.join(__dirname, 'couriers.json');
 let couriers;
@@ -57,6 +58,7 @@ const saveOrdersToFile = () => {
 
 const clientsByTag = {};
 const courierLocations = {};
+const webhookQueue = {}; // Очередь вебхуков по курьерам
 
 const courierColors = {
   "danil": "red",
@@ -67,6 +69,38 @@ const courierColors = {
   "vladimir": "darkred",
   "alex": "darkblue"
 };
+
+// Функция для получения всех заказов с пагинацией
+async function fetchAllLeads(tags, pipelineId, statusId) {
+  const allLeads = [];
+  let page = 1;
+  const limit = 10; // Лимит запроса
+
+  while (true) {
+    try {
+      const response = await axios.get(`https://${AMOCRM_DOMAIN}/api/v4/leads`, {
+        headers: { Authorization: `Bearer ${API_TOKEN}` },
+        params: {
+          with: 'contacts',
+          filter: { statuses: [{ pipeline_id: pipelineId, status_id: statusId }], tags: tags },
+          limit: limit,
+          page: page
+        },
+      });
+      const leads = response.data._embedded.leads || [];
+      allLeads.push(...leads.filter(lead => lead._embedded.tags.some(t => tags.includes(t.name))));
+
+      if (leads.length < limit) break; // Если вернулось меньше лимита, это последняя страница
+      page++;
+      await new Promise(resolve => setTimeout(resolve, REQUEST_DELAY)); // Задержка между запросами
+    } catch (error) {
+      console.error('Ошибка при получении заказов:', error.message);
+      break;
+    }
+  }
+
+  return allLeads;
+}
 
 wss.on('connection', (ws, req) => {
   console.log('Новое WebSocket-соединение:', req.url);
@@ -88,7 +122,7 @@ wss.on('connection', (ws, req) => {
       type: 'couriers', 
       data: Object.keys(couriers).map(name => ({
         name,
-        tags: couriers[name].tags || [couriers[name].tag || name], // Теги курьера
+        tags: couriers[name].tags || [couriers[name].tag || name],
         color: courierColors[name] || 'gray'
       }))
     }));
@@ -251,6 +285,11 @@ app.post('/api/webhook/:courier', async (req, res) => {
   const tags = courierData.tags || [courierData.tag];
 
   try {
+    // Инициализируем очередь для курьера, если её нет
+    webhookQueue[courier] = (webhookQueue[courier] || 0) + 1;
+    console.log(`Получен вебхук для ${courier}, всего: ${webhookQueue[courier]}`);
+
+    // Первый запрос на 10 заказов
     const response = await axios.get(`https://${AMOCRM_DOMAIN}/api/v4/leads`, {
       headers: { Authorization: `Bearer ${API_TOKEN}` },
       params: {
@@ -260,7 +299,7 @@ app.post('/api/webhook/:courier', async (req, res) => {
       },
     });
 
-    const newLeads = response.data._embedded.leads.filter(lead =>
+    let newLeads = response.data._embedded.leads.filter(lead =>
       lead._embedded.tags.some(t => tags.includes(t.name))
     );
 
@@ -307,6 +346,60 @@ app.post('/api/webhook/:courier', async (req, res) => {
         });
       }
     });
+
+    // Если вебхуков больше 5, ставим в очередь полный запрос
+    if (webhookQueue[courier] > 5) {
+      console.log(`Очередь для ${courier}: запрашиваем все заказы через ${QUEUE_DELAY / 1000} секунд`);
+      setTimeout(async () => {
+        const allLeads = await fetchAllLeads(tags, 4963870, 54415026);
+        for (const lead of allLeads) {
+          const contactId = lead._embedded?.contacts?.[0]?.id;
+          if (contactId) {
+            const contactResponse = await axios.get(`https://${AMOCRM_DOMAIN}/api/v4/contacts/${contactId}`, {
+              headers: { Authorization: `Bearer ${API_TOKEN}` }
+            });
+            const phoneField = contactResponse.data.custom_fields_values?.find(field => field.field_type === 'phone');
+            const workPhoneField = contactResponse.data.custom_fields_values?.find(field => field.field_id === 289537);
+            lead.contact = {
+              id: contactId,
+              name: contactResponse.data.name || 'Не указано',
+              phone: workPhoneField?.values.find(val => val.enum_code === 'WORK')?.value || phoneField?.values[0]?.value || 'Не указан'
+            };
+          } else {
+            lead.contact = { id: null, name: 'Не указано', phone: 'Не указан' };
+          }
+        }
+
+        tags.forEach(tag => {
+          ordersByCourier[tag] = ordersByCourier[tag] || [];
+          allLeads.forEach(newLead => {
+            const existingIndex = ordersByCourier[tag].findIndex(existing => existing.id === newLead.id);
+            if (existingIndex === -1) {
+              ordersByCourier[tag].push(newLead);
+            } else {
+              ordersByCourier[tag][existingIndex] = newLead;
+            }
+          });
+        });
+
+        saveOrdersToFile();
+
+        tags.forEach(tag => {
+          if (clientsByTag[tag]) {
+            clientsByTag[tag].forEach(client => {
+              if (client.readyState === WebSocket.OPEN) {
+                const allOrders = tags.flatMap(t => ordersByCourier[t] || []);
+                const uniqueOrders = Array.from(new Map(allOrders.map(order => [order.id, order])).values());
+                client.send(JSON.stringify({ type: 'orders', data: uniqueOrders }));
+              }
+            });
+          }
+        });
+
+        webhookQueue[courier] = 0; // Сбрасываем счётчик после обработки
+        console.log(`Все заказы для ${courier} обработаны из очереди`);
+      }, QUEUE_DELAY);
+    }
 
     res.status(200).json({ message: 'Webhook обработан' });
   } catch (error) {
@@ -397,16 +490,8 @@ const checkOrdersValidity = async () => {
     for (let i = 0; i < courierList.length; i++) {
       const courier = courierList[i];
       const tags = couriers[courier].tags || [couriers[courier].tag];
-      const response = await axios.get(`https://${AMOCRM_DOMAIN}/api/v4/leads`, {
-        headers: { Authorization: `Bearer ${API_TOKEN}` },
-        params: {
-          filter: { statuses: [{ pipeline_id: 4963870, status_id: 54415026 }], tags: tags },
-          limit: 50
-        },
-      });
-
-      const actualLeads = response.data._embedded.leads || [];
-      const actualLeadIds = new Set(actualLeads.map(lead => lead.id));
+      const allLeads = await fetchAllLeads(tags, 4963870, 54415026);
+      const actualLeadIds = new Set(allLeads.map(lead => lead.id));
 
       tags.forEach(tag => {
         if (!ordersByCourier[tag]) return;

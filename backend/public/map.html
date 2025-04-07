@@ -73,7 +73,9 @@
           }
         });
         Object.entries(data).forEach(([tag, { lat, lng }]) => {
-          const courier = couriers[tag] || { name: tag, color: 'gray' };
+          const normalizedTag = tag.toLowerCase();
+          const courier = couriers[normalizedTag] || { name: tag, color: 'gray' };
+          console.log(`Тег: ${tag}, Нормализованный тег: ${normalizedTag}, Курьер: ${courier.name}, Цвет: ${courier.color}`);
           if (markers[tag]) {
             markers[tag].setLatLng([lat, lng]);
           } else {
@@ -85,9 +87,10 @@
       } else if (type === 'couriers') {
         data.forEach(({ name, tags, color }) => {
           tags.forEach(tag => {
-            couriers[tag] = { name, color };
+            couriers[tag.toLowerCase()] = { name, color };
           });
         });
+        console.log('Получены курьеры:', couriers);
         updateLegend();
       }
     };

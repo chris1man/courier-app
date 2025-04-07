@@ -77,7 +77,8 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
   const [activeMenu, setActiveMenu] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [showInfo, setShowInfo] = useState(false);
-  const [locationEnabled, setLocationEnabled] = useState(false); // Новый статус геолокации
+  const [locationEnabled, setLocationEnabled] = useState(localStorage.getItem('geoPermission') === 'granted'); // Изначально из localStorage
+  const [showReturnOptions, setShowReturnOptions] = useState(false);
   const wsRef = useRef(null);
   const reconnectIntervalRef = useRef(null);
   const geoWatchId = useRef(null);
@@ -106,23 +107,16 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
             data: { tags: courierTags, lat: latitude, lng: longitude }
           }));
           console.log('Отправлены координаты:', { lat: latitude, lng: longitude });
-          setLocationEnabled(true); // Успешная отправка подтверждает включённую геолокацию
         },
-        (error) => {
-          console.error('Ошибка геолокации:', error);
-          setLocationEnabled(false);
-        },
+        (error) => console.error('Ошибка геолокации:', error),
         { enableHighAccuracy: true, timeout: 5000 }
       );
-    } else {
-      setLocationEnabled(false);
     }
   };
 
   const startGeoTracking = (ws) => {
     if (!navigator.geolocation) {
       console.log('Геолокация не поддерживается устройством');
-      setLocationEnabled(false);
       return;
     }
 
@@ -130,29 +124,24 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
     if (geoPermission === 'granted') {
       geoWatchId.current = navigator.geolocation.watchPosition(
         (position) => sendLocation(ws),
-        (error) => {
-          console.error('Ошибка watchPosition:', error);
-          setLocationEnabled(false);
-        },
+        (error) => console.error('Ошибка watchPosition:', error),
         { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
       );
       console.log('Запущено отслеживание геопозиции с ID:', geoWatchId.current);
-      sendLocation(ws); // Немедленная отправка координат
+      sendLocation(ws);
     } else if (!geoPermission) {
       navigator.geolocation.getCurrentPosition(
         () => {
           localStorage.setItem('geoPermission', 'granted');
           console.log('Разрешение на геолокацию получено');
+          setLocationEnabled(true);
           geoWatchId.current = navigator.geolocation.watchPosition(
             (position) => sendLocation(ws),
-            (error) => {
-              console.error('Ошибка watchPosition:', error);
-              setLocationEnabled(false);
-            },
+            (error) => console.error('Ошибка watchPosition:', error),
             { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
           );
           console.log('Запущено отслеживание геопозиции с ID:', geoWatchId.current);
-          sendLocation(ws); // Немедленная отправка координат
+          sendLocation(ws);
         },
         (error) => {
           console.error('Геолокация отклонена:', error);
@@ -161,15 +150,12 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
         },
         { enableHighAccuracy: true, timeout: 5000 }
       );
-    } else {
-      setLocationEnabled(false); // Если geoPermission === 'denied'
     }
   };
 
   const requestLocationPermission = () => {
     if (!navigator.geolocation) {
       console.log('Геолокация не поддерживается устройством');
-      setLocationEnabled(false);
       return;
     }
 
@@ -177,6 +163,7 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
       () => {
         localStorage.setItem('geoPermission', 'granted');
         console.log('Разрешение на геолокацию получено вручную');
+        setLocationEnabled(true);
         startGeoTracking(wsRef.current);
       },
       (error) => {
@@ -354,6 +341,7 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
     setCourierTags(null);
     localStorage.removeItem('courierTags');
     localStorage.removeItem('geoPermission');
+    setLocationEnabled(false);
   };
 
   const handleRefresh = () => {
@@ -366,6 +354,10 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
 
   const toggleInfo = () => {
     setShowInfo(!showInfo);
+  };
+
+  const handleReturnToWarehouse = () => {
+    setShowReturnOptions(true);
   };
 
   if (loading && orders.length === 0) {
@@ -401,7 +393,20 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
       </div>
       {locationEnabled ? (
         orders.length === 0 ? (
-          <p>Нет доступных заказов</p>
+          <div className="no-orders">
+            {showReturnOptions ? (
+              <div className="return-options">
+                <p>Выберите способ вернуться в цех:</p>
+                <a href="https://yandex.ru/maps/?text=Томск, Красноармейская 101а ст3" target="_blank" rel="noopener noreferrer" className="map-button">Яндекс Карты</a>
+                <a href="https://2gis.ru/search/Томск, Красноармейская 101а ст3" target="_blank" rel="noopener noreferrer" className="map-button">2ГИС</a>
+              </div>
+            ) : (
+              <>
+                <p>Нет доступных заказов</p>
+                <button onClick={handleReturnToWarehouse}>Вернуться в цех</button>
+              </>
+            )}
+          </div>
         ) : (
           <ul className="order-list">
             {orders.map((order, index) => (
