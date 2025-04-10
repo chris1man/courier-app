@@ -11,6 +11,9 @@
     .legend { position: absolute; top: 10px; left: 10px; background: white; padding: 10px; border: 1px solid #ccc; z-index: 1000; }
     .legend-item { display: flex; align-items: center; margin-bottom: 5px; }
     .legend-color { width: 20px; height: 20px; border-radius: 50%; margin-right: 10px; }
+    .leaflet-popup-content { font-family: 'Montserrat', sans-serif; }
+    .route-button { padding: 5px 10px; background: #e73a62; color: white; border: none; border-radius: 5px; cursor: pointer; }
+    .route-button:hover { background: #c32f52; }
   </style>
 </head>
 <body>
@@ -27,7 +30,17 @@
     }).addTo(map);
 
     const markers = {};
-    let couriers = {}; // { tag: { name, color } }
+    let couriers = {};
+    const courierColors = {
+      "danil": "#FF0000",
+      "katya": "#0000FF",
+      "sasha": "#008000",
+      "pasha": "#FFA500",
+      "timur": "#800080",
+      "vladimir": "#8B0000",
+      "alex": "#00008B",
+      "testcourier": "#00FFFF"
+    };
 
     function getCourierIcon(color) {
       return L.divIcon({
@@ -49,6 +62,33 @@
       });
     }
 
+    async function fetchOrders(login, lat, lng) {
+      console.log(`Запрос заказов для ${login} на ${lat}, ${lng}`);
+      try {
+        const response = await fetch(`/api/courier-orders/${login}`);
+        if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+        const data = await response.json();
+
+        if (!data.orders || data.orders.length === 0) {
+          return `Курьер: ${login}<br>Активных заказов нет`;
+        }
+
+        let popupContent = `Курьер: ${login}<br>`;
+        data.orders.forEach(order => {
+          const address = order.address;
+          const time = order.deliveryTime;
+          const routeUrl = `https://yandex.ru/maps/?rtext=${lat},${lng}~${encodeURIComponent(`Томск, ${address}`)}&rtt=auto`;
+          popupContent += `${address} - ${time} - <button class="route-button" onclick="window.open('${routeUrl}', '_blank')">Маршрут</button><br>`;
+        });
+
+        popupContent += `<small>*Время прибытия примерное, зависит от трафика</small>`;
+        return popupContent;
+      } catch (error) {
+        console.error('Ошибка получения заказов:', error);
+        return `Курьер: ${login}<br>Ошибка загрузки заказов: ${error.message}`;
+      }
+    }
+
     map.on('moveend zoomend', () => {
       const center = map.getCenter();
       localStorage.setItem('mapCenter', JSON.stringify([center.lat, center.lng]));
@@ -66,29 +106,36 @@
       if (event.data === 'pong') return;
       const { type, data } = JSON.parse(event.data);
       if (type === 'locations') {
-        Object.keys(markers).forEach(tag => {
-          if (!data[tag]) {
-            map.removeLayer(markers[tag]);
-            delete markers[tag];
+        Object.keys(markers).forEach(login => {
+          if (!data[login]) {
+            map.removeLayer(markers[login]);
+            delete markers[login];
           }
         });
-        Object.entries(data).forEach(([tag, { lat, lng }]) => {
-          const normalizedTag = tag.toLowerCase();
-          const courier = couriers[normalizedTag] || { name: tag, color: 'gray' };
-          console.log(`Тег: ${tag}, Нормализованный тег: ${normalizedTag}, Курьер: ${courier.name}, Цвет: ${courier.color}`);
-          if (markers[tag]) {
-            markers[tag].setLatLng([lat, lng]);
+        Object.entries(data).forEach(([login, { lat, lng }]) => {
+          const normalizedLogin = login.toLowerCase();
+          const color = couriers[normalizedLogin]?.color || courierColors[normalizedLogin] || '#808080';
+          console.log(`Обновление маркера для ${normalizedLogin}, цвет: ${color}`);
+          if (markers[login]) {
+            markers[login].setLatLng([lat, lng]);
           } else {
-            markers[tag] = L.marker([lat, lng], { icon: getCourierIcon(courier.color) })
+            markers[login] = L.marker([lat, lng], { icon: getCourierIcon(color) })
               .addTo(map)
-              .bindPopup(`Курьер: ${courier.name}`);
+              .on('click', () => {
+                console.log(`Клик по маркеру ${normalizedLogin}`);
+                fetchOrders(normalizedLogin, lat, lng).then(content => {
+                  console.log(`Получен контент для ${normalizedLogin}: ${content}`);
+                  markers[login].bindPopup(content).openPopup();
+                }).catch(error => {
+                  console.error(`Ошибка при загрузке заказов для ${normalizedLogin}:`, error);
+                  markers[login].bindPopup(`Ошибка: ${error.message}`).openPopup();
+                });
+              });
           }
         });
       } else if (type === 'couriers') {
-        data.forEach(({ name, tags, color }) => {
-          tags.forEach(tag => {
-            couriers[tag.toLowerCase()] = { name, color };
-          });
+        data.forEach(({ name, color }) => {
+          couriers[name.toLowerCase()] = { name, color };
         });
         console.log('Получены курьеры:', couriers);
         updateLegend();

@@ -5,27 +5,36 @@ import './App.css';
 
 function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [courierLogin, setCourierLogin] = useState(null);
   const [courierTags, setCourierTags] = useState(null);
 
   useEffect(() => {
+    const storedLogin = localStorage.getItem('courierLogin');
     const storedTags = localStorage.getItem('courierTags');
-    if (storedTags) {
+    if (storedLogin && storedTags) {
+      console.log('Загружены из localStorage: login=', storedLogin, 'tags=', JSON.parse(storedTags));
       setIsLoggedIn(true);
+      setCourierLogin(storedLogin);
       setCourierTags(JSON.parse(storedTags));
     }
   }, []);
 
   if (!isLoggedIn) {
-    return <LoginPage onLogin={(tags) => {
+    return <LoginPage onLogin={(login, tags) => {
+      console.log('Логин:', login, 'Теги:', tags);
       setIsLoggedIn(true);
+      setCourierLogin(login);
       setCourierTags(tags);
+      localStorage.setItem('courierLogin', login);
       localStorage.setItem('courierTags', JSON.stringify(tags));
     }} />;
   }
 
   return <OrdersPage 
+    courierLogin={courierLogin}
     courierTags={courierTags} 
     setIsLoggedIn={setIsLoggedIn} 
+    setCourierLogin={setCourierLogin}
     setCourierTags={setCourierTags} 
   />;
 }
@@ -38,13 +47,15 @@ function LoginPage({ onLogin }) {
   const handleLogin = async () => {
     try {
       const response = await axios.post(`${import.meta.env.VITE_BACKEND_URL}/login`, { login, password });
+      console.log('Ответ сервера при логине:', response.data);
       if (response.data.success) {
-        onLogin(response.data.tags);
+        onLogin(response.data.login, response.data.tags);
       } else {
         setError(response.data.message);
       }
     } catch (error) {
       setError('Ошибка при входе');
+      console.error('Ошибка логина:', error);
     }
   };
 
@@ -71,17 +82,19 @@ function LoginPage({ onLogin }) {
   );
 }
 
-function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
+function OrdersPage({ courierLogin, courierTags, setIsLoggedIn, setCourierLogin, setCourierTags }) {
   const [orders, setOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [activeMenu, setActiveMenu] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [showInfo, setShowInfo] = useState(false);
-  const [locationEnabled, setLocationEnabled] = useState(localStorage.getItem('geoPermission') === 'granted'); // Изначально из localStorage
+  const [isLocationShared, setIsLocationShared] = useState(false);
   const [showReturnOptions, setShowReturnOptions] = useState(false);
+  const [showLocationInstructions, setShowLocationInstructions] = useState(false);
   const wsRef = useRef(null);
   const reconnectIntervalRef = useRef(null);
-  const geoWatchId = useRef(null);
+
+  const LIVE_UPDATE_INTERVAL = 2 * 60 * 1000; // 2 минуты
 
   const fetchOrders = async () => {
     try {
@@ -97,90 +110,14 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
     }
   };
 
-  const sendLocation = (ws) => {
-    if (navigator.geolocation && ws.readyState === WebSocket.OPEN) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const { latitude, longitude } = position.coords;
-          ws.send(JSON.stringify({
-            type: 'location',
-            data: { tags: courierTags, lat: latitude, lng: longitude }
-          }));
-          console.log('Отправлены координаты:', { lat: latitude, lng: longitude });
-        },
-        (error) => console.error('Ошибка геолокации:', error),
-        { enableHighAccuracy: true, timeout: 5000 }
-      );
-    }
-  };
-
-  const startGeoTracking = (ws) => {
-    if (!navigator.geolocation) {
-      console.log('Геолокация не поддерживается устройством');
-      return;
-    }
-
-    const geoPermission = localStorage.getItem('geoPermission');
-    if (geoPermission === 'granted') {
-      geoWatchId.current = navigator.geolocation.watchPosition(
-        (position) => sendLocation(ws),
-        (error) => console.error('Ошибка watchPosition:', error),
-        { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
-      );
-      console.log('Запущено отслеживание геопозиции с ID:', geoWatchId.current);
-      sendLocation(ws);
-    } else if (!geoPermission) {
-      navigator.geolocation.getCurrentPosition(
-        () => {
-          localStorage.setItem('geoPermission', 'granted');
-          console.log('Разрешение на геолокацию получено');
-          setLocationEnabled(true);
-          geoWatchId.current = navigator.geolocation.watchPosition(
-            (position) => sendLocation(ws),
-            (error) => console.error('Ошибка watchPosition:', error),
-            { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
-          );
-          console.log('Запущено отслеживание геопозиции с ID:', geoWatchId.current);
-          sendLocation(ws);
-        },
-        (error) => {
-          console.error('Геолокация отклонена:', error);
-          localStorage.setItem('geoPermission', 'denied');
-          setLocationEnabled(false);
-        },
-        { enableHighAccuracy: true, timeout: 5000 }
-      );
-    }
-  };
-
-  const requestLocationPermission = () => {
-    if (!navigator.geolocation) {
-      console.log('Геолокация не поддерживается устройством');
-      return;
-    }
-
-    navigator.geolocation.getCurrentPosition(
-      () => {
-        localStorage.setItem('geoPermission', 'granted');
-        console.log('Разрешение на геолокацию получено вручную');
-        setLocationEnabled(true);
-        startGeoTracking(wsRef.current);
-      },
-      (error) => {
-        console.error('Геолокация отклонена:', error);
-        localStorage.setItem('geoPermission', 'denied');
-        setLocationEnabled(false);
-      },
-      { enableHighAccuracy: true, timeout: 5000 }
-    );
-  };
-
   const connectWebSocket = () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
 
-    console.log(`Попытка подключения к WebSocket: wss://makiapp.ru/ws?tags=${courierTags.join(',')}`);
+    console.log('Логин курьера:', courierLogin);
+    const wsUrl = `wss://makiapp.ru/ws?login=${courierLogin}`;
+    console.log(`Попытка подключения к WebSocket: ${wsUrl}`);
     setConnectionStatus('connecting');
-    const ws = new WebSocket(`wss://makiapp.ru/ws?tags=${courierTags.join(',')}`);
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
@@ -190,11 +127,10 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
       const pingInterval = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send('ping');
-          sendLocation(ws);
+          console.log('Отправлен ping');
         }
       }, 10000);
       ws.pingInterval = pingInterval;
-      startGeoTracking(ws);
     };
 
     ws.onmessage = (event) => {
@@ -203,9 +139,16 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
       try {
         const message = JSON.parse(event.data);
         if (message.type === 'orders') {
+          console.log('Обновлены заказы:', message.data);
           setOrders(message.data || []);
           localStorage.setItem('cachedOrders', JSON.stringify(message.data || []));
           setLoading(false);
+        } else if (message.type === 'locations') {
+          console.log('Получены locations:', message.data);
+          const loc = message.data[courierLogin.toLowerCase()];
+          const isActive = loc && loc.live && (Date.now() - loc.lastUpdate < LIVE_UPDATE_INTERVAL);
+          console.log(`Логин ${courierLogin}: live=${loc?.live}, lastUpdate=${loc?.lastUpdate}, активно=${isActive}`);
+          setIsLocationShared(isActive);
         }
       } catch (error) {
         console.error('Ошибка парсинга сообщения WebSocket:', error);
@@ -223,10 +166,6 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
       setConnectionStatus('disconnected');
       wsRef.current = null;
       clearInterval(ws.pingInterval);
-      if (geoWatchId.current) {
-        navigator.geolocation.clearWatch(geoWatchId.current);
-        geoWatchId.current = null;
-      }
     };
   };
 
@@ -264,12 +203,8 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
         console.log('Закрытие WebSocket');
         wsRef.current.close();
       }
-      if (geoWatchId.current) {
-        navigator.geolocation.clearWatch(geoWatchId.current);
-        geoWatchId.current = null;
-      }
     };
-  }, [courierTags]);
+  }, [courierLogin]);
 
   const handleDeliver = async (id) => {
     try {
@@ -338,10 +273,11 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
   const handleLogout = () => {
     setOrders([]);
     setIsLoggedIn(false);
+    setCourierLogin(null);
     setCourierTags(null);
+    localStorage.removeItem('courierLogin');
     localStorage.removeItem('courierTags');
-    localStorage.removeItem('geoPermission');
-    setLocationEnabled(false);
+    setIsLocationShared(false);
   };
 
   const handleRefresh = () => {
@@ -358,6 +294,15 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
 
   const handleReturnToWarehouse = () => {
     setShowReturnOptions(true);
+  };
+
+  const handleShareLocation = () => {
+    setShowLocationInstructions(true);
+  };
+
+  const confirmShareLocation = () => {
+    setShowLocationInstructions(false);
+    window.open('https://t.me/MAKICOURIERLOC_bot', '_blank');
   };
 
   if (loading && orders.length === 0) {
@@ -391,7 +336,7 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
           )}
         </div>
       </div>
-      {locationEnabled ? (
+      {isLocationShared ? (
         orders.length === 0 ? (
           <div className="no-orders">
             {showReturnOptions ? (
@@ -427,20 +372,35 @@ function OrdersPage({ courierTags, setIsLoggedIn, setCourierTags }) {
         )
       ) : (
         <div className="location-prompt">
-          <p>У вас отключено местоположение. Разрешить?</p>
-          <button onClick={requestLocationPermission}>Разрешить</button>
+          <p>Поделитесь местоположением, чтобы видеть заказы</p>
+          <button onClick={handleShareLocation}>Поделиться местоположением</button>
         </div>
       )}
       {showInfo && (
         <div className="info-modal">
           <div className="info-content">
             <h3>Информация о приложении</h3>
-            <p><strong>Версия:</strong> v.0.2</p>
+            <p><strong>Версия:</strong> v.0.3</p>
             <p><strong>Автор:</strong> 221</p>
             <p><strong>Дата создания:</strong> 03.2025</p>
             <p><strong>Описание:</strong> PWA для курьеров с интеграцией amoCRM</p>
             <p><strong>Контакты:</strong> it@makiopt.ru <a href="https://t.me/hallo221" target="_blank" rel="noopener noreferrer">@hallo221</a></p>
             <button onClick={toggleInfo}>Закрыть</button>
+          </div>
+        </div>
+      )}
+      {showLocationInstructions && (
+        <div className="info-modal">
+          <div className="info-content">
+            <h3>Инструкция</h3>
+            <p>Чтобы видеть заказы, отправьте <strong>"живое" местоположение</strong> в Telegram-боте:</p>
+            <ol>
+              <li>Нажмите "Поделиться местоположением" в боте.</li>
+              <li>Выберите "Делиться 8 часов" (или другой длительный период).</li>
+              <li>Вернитесь в приложение — заказы появятся автоматически.</li>
+            </ol>
+            <button onClick={confirmShareLocation}>Перейти в Telegram</button>
+            <button onClick={() => setShowLocationInstructions(false)} style={{ background: '#6c757d', marginLeft: '10px' }}>Отмена</button>
           </div>
         </div>
       )}

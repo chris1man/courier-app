@@ -26,8 +26,8 @@ const AMOCRM_DOMAIN = process.env.AMOCRM_DOMAIN;
 const API_TOKEN = process.env.API_TOKEN;
 const CRON_SECRET = process.env.CRON_SECRET || 'default_secret';
 const PORT = process.env.PORT || 3001;
-const REQUEST_DELAY = 1000; // Задержка между запросами к API
-const QUEUE_DELAY = 5000;   // Задержка между запросами в очереди (5 секунд)
+const REQUEST_DELAY = 1000;
+const QUEUE_DELAY = 5000;
 
 const couriersFilePath = path.join(__dirname, 'couriers.json');
 let couriers;
@@ -56,25 +56,25 @@ const saveOrdersToFile = () => {
   }
 };
 
-const clientsByTag = {};
+const clientsByLogin = {};
 const courierLocations = {};
-const webhookQueue = {}; // Очередь вебхуков по курьерам
+const webhookQueue = {};
 
 const courierColors = {
-  "danil": "red",
-  "katya": "blue",
-  "sasha": "green",
-  "pasha": "orange",
-  "timur": "purple",
-  "vladimir": "darkred",
-  "alex": "darkblue"
+  "danil": "#FF0000",
+  "katya": "#0000FF",
+  "sasha": "#008000",
+  "pasha": "#FFA500",
+  "timur": "#800080",
+  "vladimir": "#8B0000",
+  "alex": "#00008B",
+  "testcourier": "#00FFFF"
 };
 
-// Функция для получения всех заказов с пагинацией
 async function fetchAllLeads(tags, pipelineId, statusId) {
   const allLeads = [];
   let page = 1;
-  const limit = 10; // Лимит запроса
+  const limit = 10;
 
   while (true) {
     try {
@@ -90,9 +90,9 @@ async function fetchAllLeads(tags, pipelineId, statusId) {
       const leads = response.data._embedded.leads || [];
       allLeads.push(...leads.filter(lead => lead._embedded.tags.some(t => tags.includes(t.name))));
 
-      if (leads.length < limit) break; // Если вернулось меньше лимита, это последняя страница
+      if (leads.length < limit) break;
       page++;
-      await new Promise(resolve => setTimeout(resolve, REQUEST_DELAY)); // Задержка между запросами
+      await new Promise(resolve => setTimeout(resolve, REQUEST_DELAY));
     } catch (error) {
       console.error('Ошибка при получении заказов:', error.message);
       break;
@@ -105,8 +105,7 @@ async function fetchAllLeads(tags, pipelineId, statusId) {
 wss.on('connection', (ws, req) => {
   console.log('Новое WebSocket-соединение:', req.url);
   const urlParams = new URLSearchParams(req.url.split('?')[1]);
-  const tagsParam = urlParams.get('tags');
-  const tags = tagsParam ? tagsParam.split(',') : [];
+  const login = urlParams.get('login');
   const isMap = urlParams.get('type') === 'map';
 
   if (isMap) {
@@ -122,20 +121,27 @@ wss.on('connection', (ws, req) => {
       type: 'couriers', 
       data: Object.keys(couriers).map(name => ({
         name,
-        tags: couriers[name].tags || [couriers[name].tag || name],
-        color: courierColors[name] || 'gray'
+        color: courierColors[name] || '#808080'
       }))
     }));
-  } else if (tags.length > 0) {
-    tags.forEach(tag => {
-      clientsByTag[tag] = clientsByTag[tag] || [];
-      clientsByTag[tag].push(ws);
-      console.log(`Курьер подключился к тегу ${tag} через WebSocket`);
-    });
+  } else if (login) {
+    const normalizedLogin = login.toLowerCase();
+    clientsByLogin[normalizedLogin] = clientsByLogin[normalizedLogin] || [];
+    clientsByLogin[normalizedLogin].push(ws);
+    console.log(`Курьер подключился с логином ${normalizedLogin} через WebSocket`);
 
+    const tags = couriers[normalizedLogin]?.tags || [normalizedLogin];
     const allOrders = tags.flatMap(tag => ordersByCourier[tag] || []);
     const uniqueOrders = Array.from(new Map(allOrders.map(order => [order.id, order])).values());
     ws.send(JSON.stringify({ type: 'orders', data: uniqueOrders }));
+    ws.send(JSON.stringify({ type: 'locations', data: courierLocations }));
+    ws.send(JSON.stringify({ 
+      type: 'couriers', 
+      data: Object.keys(couriers).map(name => ({
+        name,
+        color: courierColors[name] || '#808080'
+      }))
+    }));
 
     ws.on('message', (message) => {
       const msgString = message.toString();
@@ -143,37 +149,12 @@ wss.on('connection', (ws, req) => {
         ws.send('pong');
         return;
       }
-      try {
-        const data = JSON.parse(msgString);
-        if (data.type === 'location') {
-          const { tags: locationTags, lat, lng } = data.data;
-          if (!locationTags || !Array.isArray(locationTags)) throw new Error('Неверный формат тегов в сообщении location');
-          locationTags.forEach(tag => {
-            if (ordersByCourier[tag]?.length > 0) {
-              courierLocations[tag] = { lat, lng, lastUpdate: Date.now() };
-              console.log(`Обновлены координаты для ${tag}: ${lat}, ${lng}`);
-            } else {
-              delete courierLocations[tag];
-            }
-          });
-          wss.clients.forEach(client => {
-            const clientParams = new URLSearchParams(client.url?.split('?')[1] || '');
-            if (client.readyState === WebSocket.OPEN && clientParams.get('type') === 'map') {
-              client.send(JSON.stringify({ type: 'locations', data: courierLocations }));
-            }
-          });
-        }
-      } catch (error) {
-        console.error('Ошибка обработки сообщения WebSocket:', error.message);
-      }
     });
 
     ws.on('error', (error) => console.error('Ошибка WebSocket:', error));
     ws.on('close', () => {
-      tags.forEach(tag => {
-        clientsByTag[tag] = clientsByTag[tag].filter(client => client !== ws);
-        console.log(`Курьер отключился от тега ${tag}`);
-      });
+      clientsByLogin[normalizedLogin] = clientsByLogin[normalizedLogin].filter(client => client !== ws);
+      console.log(`Курьер с логином ${normalizedLogin} отключился`);
     });
   } else {
     ws.close();
@@ -184,8 +165,8 @@ app.post('/api/login', (req, res) => {
   const { login, password } = req.body;
   const courier = couriers[login];
   if (courier && courier.password === password) {
-    const tags = courier.tags || [courier.tag];
-    res.json({ success: true, tags });
+    const tags = courier.tags || [login];
+    res.json({ success: true, login, tags });
   } else {
     res.status(401).json({ success: false, message: 'Неверный логин или пароль' });
   }
@@ -242,11 +223,11 @@ app.patch('/api/leads/:id', async (req, res) => {
       if (ordersByCourier[tag].length < initialLength) {
         console.log(`Заказ ${id} удалён из ordersByCourier для тега ${tag}`);
         saveOrdersToFile();
-        if (clientsByTag[tag]) {
-          clientsByTag[tag].forEach(client => {
+        if (clientsByLogin[tag]) {
+          clientsByLogin[tag].forEach(client => {
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({ type: 'orders', data: ordersByCourier[tag] }));
-              console.log(`Отправлен обновлённый список заказов для тега ${tag}`);
+              console.log(`Отправлен обновлённый список заказов для логина ${tag}`);
             }
           });
         }
@@ -282,14 +263,12 @@ app.post('/api/webhook/:courier', async (req, res) => {
   if (!courierData) {
     return res.status(400).json({ error: 'Курьер не найден' });
   }
-  const tags = courierData.tags || [courierData.tag];
+  const tags = courierData.tags || [courier];
 
   try {
-    // Инициализируем очередь для курьера, если её нет
     webhookQueue[courier] = (webhookQueue[courier] || 0) + 1;
     console.log(`Получен вебхук для ${courier}, всего: ${webhookQueue[courier]}`);
 
-    // Первый запрос на 10 заказов
     const response = await axios.get(`https://${AMOCRM_DOMAIN}/api/v4/leads`, {
       headers: { Authorization: `Bearer ${API_TOKEN}` },
       params: {
@@ -336,8 +315,8 @@ app.post('/api/webhook/:courier', async (req, res) => {
     saveOrdersToFile();
 
     tags.forEach(tag => {
-      if (clientsByTag[tag]) {
-        clientsByTag[tag].forEach(client => {
+      if (clientsByLogin[tag]) {
+        clientsByLogin[tag].forEach(client => {
           if (client.readyState === WebSocket.OPEN) {
             const allOrders = tags.flatMap(t => ordersByCourier[t] || []);
             const uniqueOrders = Array.from(new Map(allOrders.map(order => [order.id, order])).values());
@@ -347,7 +326,6 @@ app.post('/api/webhook/:courier', async (req, res) => {
       }
     });
 
-    // Если вебхуков больше 5, ставим в очередь полный запрос
     if (webhookQueue[courier] > 5) {
       console.log(`Очередь для ${courier}: запрашиваем все заказы через ${QUEUE_DELAY / 1000} секунд`);
       setTimeout(async () => {
@@ -385,8 +363,8 @@ app.post('/api/webhook/:courier', async (req, res) => {
         saveOrdersToFile();
 
         tags.forEach(tag => {
-          if (clientsByTag[tag]) {
-            clientsByTag[tag].forEach(client => {
+          if (clientsByLogin[tag]) {
+            clientsByLogin[tag].forEach(client => {
               if (client.readyState === WebSocket.OPEN) {
                 const allOrders = tags.flatMap(t => ordersByCourier[t] || []);
                 const uniqueOrders = Array.from(new Map(allOrders.map(order => [order.id, order])).values());
@@ -396,7 +374,7 @@ app.post('/api/webhook/:courier', async (req, res) => {
           }
         });
 
-        webhookQueue[courier] = 0; // Сбрасываем счётчик после обработки
+        webhookQueue[courier] = 0;
         console.log(`Все заказы для ${courier} обработаны из очереди`);
       }, QUEUE_DELAY);
     }
@@ -406,6 +384,48 @@ app.post('/api/webhook/:courier', async (req, res) => {
     console.error(`Ошибка вебхука для ${courier}:`, error.message);
     res.status(500).json({ error: 'Ошибка обработки вебхука' });
   }
+});
+
+app.post('/api/location', (req, res) => {
+  const { login, lat, lng, live } = req.body;
+
+  if (!login) {
+    console.error('Неверные параметры в /api/location:', req.body);
+    return res.status(400).json({ error: 'Логин обязателен' });
+  }
+
+  const normalizedLogin = login.toLowerCase();
+
+  if (live === false) {
+    delete courierLocations[normalizedLogin];
+    console.log(`Live-сессия для ${normalizedLogin} завершена`);
+  } else if (lat && lng) {
+    courierLocations[normalizedLogin] = { lat, lng, lastUpdate: Date.now(), live: true };
+    console.log(`Получены live координаты для ${normalizedLogin}: ${lat}, ${lng}`);
+  } else {
+    console.error('Неверные координаты в /api/location:', req.body);
+    return res.status(400).json({ error: 'Координаты lat и lng обязательны для live' });
+  }
+
+  wss.clients.forEach(client => {
+    const clientParams = new URLSearchParams(client.url?.split('?')[1] || '');
+    const clientLogin = clientParams.get('login') || (clientParams.get('type') === 'map' ? 'map' : 'unknown');
+    if (client.readyState === WebSocket.OPEN) {
+      console.log(`Отправка WebSocket клиенту с логином/типом: ${clientLogin}`);
+      client.send(JSON.stringify({ type: 'locations', data: courierLocations }));
+      if (clientParams.get('type') === 'map') {
+        client.send(JSON.stringify({ 
+          type: 'couriers', 
+          data: Object.keys(couriers).map(name => ({
+            name,
+            color: courierColors[name] || '#808080'
+          }))
+        }));
+      }
+    }
+  });
+
+  res.status(200).json({ message: 'Координаты приняты' });
 });
 
 app.delete('/api/leads/:id', (req, res) => {
@@ -428,11 +448,11 @@ app.delete('/api/leads/:id', (req, res) => {
       if (ordersByCourier[tag].length < initialLength) {
         console.log(`Заказ ${id} удалён из ordersByCourier для тега ${tag}`);
         saveOrdersToFile();
-        if (clientsByTag[tag]) {
-          clientsByTag[tag].forEach(client => {
+        if (clientsByLogin[tag]) {
+          clientsByLogin[tag].forEach(client => {
             if (client.readyState === WebSocket.OPEN) {
               client.send(JSON.stringify({ type: 'orders', data: ordersByCourier[tag] }));
-              console.log(`Отправлен обновлённый список заказов для тега ${tag}`);
+              console.log(`Отправлен обновлённый список заказов для логина ${tag}`);
             }
           });
         }
@@ -468,8 +488,8 @@ app.post('/api/orders/sort', (req, res) => {
     ordersByCourier[tag] = sortedOrders;
     console.log(`Порядок заказов обновлён для тега ${tag}`);
 
-    if (clientsByTag[tag]) {
-      clientsByTag[tag].forEach(client => {
+    if (clientsByLogin[tag]) {
+      clientsByLogin[tag].forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({ type: 'orders', data: sortedOrders }));
         }
@@ -481,6 +501,30 @@ app.post('/api/orders/sort', (req, res) => {
   res.status(200).json({ message: 'Порядок заказов сохранён' });
 });
 
+app.get('/api/courier-orders/:login', (req, res) => {
+  const { login } = req.params;
+  const normalizedLogin = login.toLowerCase();
+  console.log(`Запрос заказов для логина: ${normalizedLogin}`);
+
+  const tags = couriers[normalizedLogin]?.tags || [normalizedLogin];
+  const allOrders = tags.flatMap(tag => ordersByCourier[tag] || []);
+  const uniqueOrders = Array.from(new Map(allOrders.map(order => [order.id, order])).values());
+
+  if (!uniqueOrders.length) {
+    console.log(`Заказы для ${normalizedLogin} не найдены`);
+    return res.status(200).json({ orders: [] });
+  }
+
+  const activeOrders = uniqueOrders.map(order => ({
+    id: order.id,
+    address: order.custom_fields_values?.find(f => f.field_id === 293241)?.values[0]?.value || 'Не указан',
+    deliveryTime: order.custom_fields_values?.find(f => f.field_id === 293299)?.values[0]?.value || 'Не указано'
+  }));
+
+  console.log(`Отправлены заказы для ${normalizedLogin}:`, activeOrders);
+  res.status(200).json({ orders: activeOrders });
+});
+
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 const checkOrdersValidity = async () => {
@@ -489,7 +533,7 @@ const checkOrdersValidity = async () => {
     const courierList = Object.keys(couriers);
     for (let i = 0; i < courierList.length; i++) {
       const courier = courierList[i];
-      const tags = couriers[courier].tags || [couriers[courier].tag];
+      const tags = couriers[courier].tags || [courier];
       const allLeads = await fetchAllLeads(tags, 4963870, 54415026);
       const actualLeadIds = new Set(allLeads.map(lead => lead.id));
 
@@ -499,8 +543,8 @@ const checkOrdersValidity = async () => {
         ordersByCourier[tag] = ordersByCourier[tag].filter(lead => actualLeadIds.has(lead.id));
         if (ordersByCourier[tag].length < initialLength) {
           saveOrdersToFile();
-          if (clientsByTag[tag]) {
-            clientsByTag[tag].forEach(client => {
+          if (clientsByLogin[tag]) {
+            clientsByLogin[tag].forEach(client => {
               if (client.readyState === WebSocket.OPEN) {
                 const allOrders = tags.flatMap(t => ordersByCourier[t] || []);
                 const uniqueOrders = Array.from(new Map(allOrders.map(order => [order.id, order])).values());
