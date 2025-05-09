@@ -14,6 +14,7 @@
     .leaflet-popup-content { font-family: 'Montserrat', sans-serif; }
     .route-button { padding: 5px 10px; background: #e73a62; color: white; border: none; border-radius: 5px; cursor: pointer; }
     .route-button:hover { background: #c32f52; }
+    .leaflet-bottom.leaflet-right { display: none; }
   </style>
 </head>
 <body>
@@ -41,10 +42,11 @@
       "alex": "#00008B",
       "testcourier": "#00FFFF"
     };
+    const LIVE_UPDATE_INTERVAL = 2 * 60 * 1000; // 2 минуты
 
-    function getCourierIcon(color) {
+    function getCourierIcon(color, isLive) {
       return L.divIcon({
-        html: `<div style="background-color: ${color}; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white;"></div>`,
+        html: `<div style="background-color: ${color}; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; position: relative;"><div style="background-color: black; width: 6px; height: 6px; border-radius: 50%; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); ${isLive ? 'display: none;' : ''}"></div></div>`,
         className: 'courier-icon',
         iconSize: [20, 20],
         iconAnchor: [10, 10]
@@ -62,30 +64,33 @@
       });
     }
 
-    async function fetchOrders(login, lat, lng) {
+    async function fetchOrders(login, lat, lng, lastUpdate) {
       console.log(`Запрос заказов для ${login} на ${lat}, ${lng}`);
       try {
         const response = await fetch(`/api/courier-orders/${login}`);
         if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
         const data = await response.json();
 
-        if (!data.orders || data.orders.length === 0) {
-          return `Курьер: ${login}<br>Активных заказов нет`;
-        }
+        const lastUpdateTime = new Date(lastUpdate).toLocaleString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        let popupContent = `Курьер: ${login}<br>Последнее обновление: ${lastUpdateTime}<br>`;
 
-        let popupContent = `Курьер: ${login}<br>`;
-        data.orders.forEach(order => {
-          const address = order.address;
-          const time = order.deliveryTime;
-          const routeUrl = `https://yandex.ru/maps/?rtext=${lat},${lng}~${encodeURIComponent(`Томск, ${address}`)}&rtt=auto`;
-          popupContent += `${address} - ${time} - <button class="route-button" onclick="window.open('${routeUrl}', '_blank')">Маршрут</button><br>`;
-        });
+        if (!data.orders || data.orders.length === 0) {
+          popupContent += 'Активных заказов нет';
+        } else {
+          data.orders.forEach(order => {
+            const address = order.address;
+            const time = order.deliveryTime;
+            const routeUrl = `https://yandex.ru/maps/?rtext=${lat},${lng}~${encodeURIComponent(`Томск, ${address}`)}&rtt=auto`;
+            popupContent += `${address} - ${time} - <button class="route-button" onclick="window.open('${routeUrl}', '_blank')">Маршрут</button><br>`;
+          });
+        }
 
         popupContent += `<small>*Время прибытия примерное, зависит от трафика</small>`;
         return popupContent;
       } catch (error) {
         console.error('Ошибка получения заказов:', error);
-        return `Курьер: ${login}<br>Ошибка загрузки заказов: ${error.message}`;
+        const lastUpdateTime = new Date(lastUpdate).toLocaleString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+        return `Курьер: ${login}<br>Последнее обновление: ${lastUpdateTime}<br>Ошибка загрузки заказов: ${error.message}`;
       }
     }
 
@@ -112,18 +117,32 @@
             delete markers[login];
           }
         });
-        Object.entries(data).forEach(([login, { lat, lng }]) => {
+        Object.entries(data).forEach(([login, { lat, lng, lastUpdate, live }]) => {
           const normalizedLogin = login.toLowerCase();
           const color = couriers[normalizedLogin]?.color || courierColors[normalizedLogin] || '#808080';
-          console.log(`Обновление маркера для ${normalizedLogin}, цвет: ${color}`);
+          const isLive = live && (Date.now() - lastUpdate < LIVE_UPDATE_INTERVAL);
+          console.log(`Обновление маркера для ${normalizedLogin}, цвет: ${color}, live: ${isLive}`);
+          
           if (markers[login]) {
             markers[login].setLatLng([lat, lng]);
+            markers[login].setIcon(getCourierIcon(color, isLive));
+            if (markers[login].isPopupOpen()) {
+              fetchOrders(normalizedLogin, lat, lng, lastUpdate).then(content => {
+                console.log(`Обновлён контент попапа для ${normalizedLogin}: ${content}`);
+                markers[login].setPopupContent(content);
+                markers[login].openPopup(); // Принудительно переоткрываем попап
+              }).catch(error => {
+                console.error(`Ошибка при обновлении попапа для ${normalizedLogin}:`, error);
+                markers[login].setPopupContent(`Ошибка: ${error.message}`);
+                markers[login].openPopup();
+              });
+            }
           } else {
-            markers[login] = L.marker([lat, lng], { icon: getCourierIcon(color) })
+            markers[login] = L.marker([lat, lng], { icon: getCourierIcon(color, isLive) })
               .addTo(map)
               .on('click', () => {
                 console.log(`Клик по маркеру ${normalizedLogin}`);
-                fetchOrders(normalizedLogin, lat, lng).then(content => {
+                fetchOrders(normalizedLogin, lat, lng, lastUpdate).then(content => {
                   console.log(`Получен контент для ${normalizedLogin}: ${content}`);
                   markers[login].bindPopup(content).openPopup();
                 }).catch(error => {

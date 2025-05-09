@@ -97,14 +97,42 @@ function OrdersPage({ courierLogin, courierTags, setIsLoggedIn, setCourierLogin,
   const LIVE_UPDATE_INTERVAL = 2 * 60 * 1000; // 2 минуты
 
   const fetchOrders = async () => {
+    if (orders.length > 0) {
+      console.log('Пропускаем fetchOrders, так как заказы уже есть:', orders);
+      setLoading(false);
+      return;
+    }
     try {
-      const response = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/leads?tag=${courierTags.join(',')}`);
-      const newOrders = response.data._embedded.leads || [];
-      setOrders(newOrders);
-      localStorage.setItem('cachedOrders', JSON.stringify(newOrders));
+      console.log('Начинаем загрузку заказов через API. Параметры:', {
+        url: `${import.meta.env.VITE_BACKEND_URL}/leads`,
+        tags: courierTags
+      });
+      
+      // Запрашиваем заказы для каждого тега курьера
+      const allOrders = [];
+      for (const tag of courierTags) {
+        const response = await axios.get(`${import.meta.env.VITE_BACKEND_URL}/leads?tag=${tag}`);
+        console.log(`Ответ API заказов для тега ${tag}:`, {
+          status: response.status,
+          statusText: response.statusText,
+          data: response.data
+        });
+        const tagOrders = response.data._embedded.leads || [];
+        allOrders.push(...tagOrders);
+      }
+      
+      // Удаляем дубликаты заказов по id
+      const uniqueOrders = Array.from(new Map(allOrders.map(order => [order.id, order])).values());
+      console.log('Загружены заказы через API:', uniqueOrders);
+      setOrders(uniqueOrders);
+      localStorage.setItem('cachedOrders', JSON.stringify(uniqueOrders));
       setLoading(false);
     } catch (error) {
-      console.error('Ошибка начальной загрузки заказов:', error);
+      console.error('Ошибка начальной загрузки заказов:', {
+        error: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
       setLoading(false);
       setConnectionStatus('error');
     }
@@ -113,7 +141,7 @@ function OrdersPage({ courierLogin, courierTags, setIsLoggedIn, setCourierLogin,
   const connectWebSocket = () => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
 
-    console.log('Логин курьера:', courierLogin);
+    console.log('Логин курьера:', courierLogin, 'Теги:', courierTags);
     const wsUrl = `wss://makiapp.ru/ws?login=${courierLogin}`;
     console.log(`Попытка подключения к WebSocket: ${wsUrl}`);
     setConnectionStatus('connecting');
@@ -146,9 +174,25 @@ function OrdersPage({ courierLogin, courierTags, setIsLoggedIn, setCourierLogin,
         } else if (message.type === 'locations') {
           console.log('Получены locations:', message.data);
           const loc = message.data[courierLogin.toLowerCase()];
+          console.log('Данные о местоположении для курьера:', {
+            courierLogin,
+            courierLoginLower: courierLogin.toLowerCase(),
+            locationData: loc,
+            rawLocations: message.data
+          });
           const isActive = loc && loc.live && (Date.now() - loc.lastUpdate < LIVE_UPDATE_INTERVAL);
-          console.log(`Логин ${courierLogin}: live=${loc?.live}, lastUpdate=${loc?.lastUpdate}, активно=${isActive}`);
+          console.log(`Детальная проверка местоположения для ${courierLogin}:`, {
+            hasLocation: !!loc,
+            isLive: loc?.live,
+            lastUpdate: loc?.lastUpdate,
+            timeSinceUpdate: loc?.lastUpdate ? Date.now() - loc.lastUpdate : null,
+            isWithinInterval: loc?.lastUpdate ? (Date.now() - loc.lastUpdate < LIVE_UPDATE_INTERVAL) : false,
+            finalIsActive: isActive
+          });
           setIsLocationShared(isActive);
+          if (isActive) {
+            setShowLocationInstructions(false);
+          }
         }
       } catch (error) {
         console.error('Ошибка парсинга сообщения WebSocket:', error);
@@ -172,7 +216,9 @@ function OrdersPage({ courierLogin, courierTags, setIsLoggedIn, setCourierLogin,
   useEffect(() => {
     const cachedOrders = localStorage.getItem('cachedOrders');
     if (cachedOrders) {
-      setOrders(JSON.parse(cachedOrders));
+      const parsedOrders = JSON.parse(cachedOrders);
+      console.log('Загружены кэшированные заказы:', parsedOrders);
+      setOrders(parsedOrders);
       setLoading(false);
     } else {
       fetchOrders();
@@ -204,7 +250,7 @@ function OrdersPage({ courierLogin, courierTags, setIsLoggedIn, setCourierLogin,
         wsRef.current.close();
       }
     };
-  }, [courierLogin]);
+  }, [courierLogin, courierTags]);
 
   const handleDeliver = async (id) => {
     try {
@@ -305,6 +351,8 @@ function OrdersPage({ courierLogin, courierTags, setIsLoggedIn, setCourierLogin,
     window.open('https://t.me/MAKICOURIERLOC_bot', '_blank');
   };
 
+  console.log('Рендеринг OrdersPage: orders=', orders, 'isLocationShared=', isLocationShared);
+
   if (loading && orders.length === 0) {
     return <div className="loading">Загрузка...</div>;
   }
@@ -380,7 +428,7 @@ function OrdersPage({ courierLogin, courierTags, setIsLoggedIn, setCourierLogin,
         <div className="info-modal">
           <div className="info-content">
             <h3>Информация о приложении</h3>
-            <p><strong>Версия:</strong> v.0.3</p>
+            <p><strong>Версия:</strong> v.0.2</p>
             <p><strong>Автор:</strong> 221</p>
             <p><strong>Дата создания:</strong> 03.2025</p>
             <p><strong>Описание:</strong> PWA для курьеров с интеграцией amoCRM</p>
@@ -422,17 +470,20 @@ function OrderItem({ order, index, totalOrders, onDeliver, onDelete, onMoveUp, o
   };
 
   const phone = getCustomFieldValue(order.custom_fields_values, 293293);
-  const formattedPhone = phone.startsWith('7') ? `+${phone}` : phone.startsWith('8') ? phone : phone;
+  const formattedPhone = phone.startsWith('7') ? `+${phone}` : phone.startsWith('8') ? `+7${phone.slice(1)}` : phone;
   const rawAddress = getCustomFieldValue(order.custom_fields_values, 293241);
   const address = formatAddress(rawAddress);
   const contactPhone = order.contact?.phone || 'Не указан';
+  const formattedContactPhone = contactPhone !== 'Не указан' ? 
+    (contactPhone.startsWith('7') ? `+${contactPhone}` : contactPhone.startsWith('8') ? `+7${contactPhone.slice(1)}` : contactPhone) 
+    : contactPhone;
 
   return (
     <li className="order-item animate-appear">
       <div className="order-content">
         <div>
           <p><strong>Номер с сайта:</strong> {order.id}</p>
-          <p><strong>Номер заказчика:</strong> <a href={`tel:${contactPhone}`}>{contactPhone}</a></p>
+          <p><strong>Номер заказчика:</strong> <a href={`tel:${formattedContactPhone}`}>{formattedContactPhone}</a></p>
           <p><strong>Дата доставки:</strong> {getCustomFieldValue(order.custom_fields_values, 1037323)}</p>
           <p><strong>Время доставки:</strong> {getCustomFieldValue(order.custom_fields_values, 293299)}</p>
           <p><strong>Адрес:</strong> {rawAddress.includes('Томск') ? rawAddress : `г. Томск, ${rawAddress}`}</p>

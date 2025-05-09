@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
 const cron = require('node-cron');
+const { LIVE_UPDATE_INTERVAL, MAP_DISPLAY_EXTENSION } = require('./config');
 
 const app = express();
 const server = require('http').createServer(app);
@@ -28,6 +29,8 @@ const CRON_SECRET = process.env.CRON_SECRET || 'default_secret';
 const PORT = process.env.PORT || 3001;
 const REQUEST_DELAY = 1000;
 const QUEUE_DELAY = 5000;
+const CACHE_DURATION = 5 * 60 * 1000;
+const MAX_REQUESTS_PER_MINUTE = 30;
 
 const couriersFilePath = path.join(__dirname, 'couriers.json');
 let couriers;
@@ -71,6 +74,60 @@ const courierColors = {
   "testcourier": "#00FFFF"
 };
 
+const apiCache = {
+  data: new Map(),
+  lastRequest: 0,
+  requestCount: 0,
+  lastReset: Date.now()
+};
+
+function checkRequestLimit() {
+  const now = Date.now();
+  if (now - apiCache.lastReset >= 60000) {
+    apiCache.requestCount = 0;
+    apiCache.lastReset = now;
+  }
+  
+  if (apiCache.requestCount >= MAX_REQUESTS_PER_MINUTE) {
+    const waitTime = 60000 - (now - apiCache.lastReset);
+    console.log(`Достигнут лимит запросов. Ожидание ${waitTime}мс`);
+    return false;
+  }
+  
+  apiCache.requestCount++;
+  return true;
+}
+
+async function fetchFromAmoCRM(params) {
+  const cacheKey = JSON.stringify(params);
+  const cachedData = apiCache.data.get(cacheKey);
+  
+  if (cachedData && Date.now() - cachedData.timestamp < CACHE_DURATION) {
+    console.log('Возвращаем данные из кэша');
+    return cachedData.data;
+  }
+  
+  if (!checkRequestLimit()) {
+    if (cachedData) {
+      console.log('Используем устаревшие данные из кэша из-за ограничения запросов');
+      return cachedData.data;
+    }
+    throw new Error('Превышен лимит запросов к API');
+  }
+  
+  const response = await axios.get(`https://${AMOCRM_DOMAIN}/api/v4/leads`, {
+    headers: { Authorization: `Bearer ${API_TOKEN}` },
+    params: params
+  });
+  
+  apiCache.data.set(cacheKey, {
+    data: response.data,
+    timestamp: Date.now()
+  });
+  
+  return response.data;
+}
+
 async function fetchAllLeads(tags, pipelineId, statusId) {
   const allLeads = [];
   let page = 1;
@@ -78,17 +135,36 @@ async function fetchAllLeads(tags, pipelineId, statusId) {
 
   while (true) {
     try {
-      const response = await axios.get(`https://${AMOCRM_DOMAIN}/api/v4/leads`, {
-        headers: { Authorization: `Bearer ${API_TOKEN}` },
-        params: {
-          with: 'contacts',
-          filter: { statuses: [{ pipeline_id: pipelineId, status_id: statusId }], tags: tags },
-          limit: limit,
-          page: page
-        },
+      console.log(`Запрос заказов для тегов ${tags}, страница ${page}`);
+      const response = await fetchFromAmoCRM({
+        with: 'contacts',
+        filter: { statuses: [{ pipeline_id: pipelineId, status_id: statusId }], tags: tags },
+        limit: limit,
+        page: page
       });
-      const leads = response.data._embedded.leads || [];
-      allLeads.push(...leads.filter(lead => lead._embedded.tags.some(t => tags.includes(t.name))));
+      
+      console.log('Ответ от amoCRM:', {
+        total: response._total,
+        page: page,
+        leads: response._embedded.leads.map(lead => ({
+          id: lead.id,
+          tags: lead._embedded.tags.map(t => t.name)
+        }))
+      });
+      
+      const leads = response._embedded.leads || [];
+      const filteredLeads = leads.filter(lead => {
+        const leadTags = lead._embedded.tags.map(t => t.name);
+        const hasMatchingTag = leadTags.some(t => tags.includes(t));
+        console.log(`Проверка заказа ${lead.id}:`, {
+          leadTags,
+          searchTags: tags,
+          hasMatch: hasMatchingTag
+        });
+        return hasMatchingTag;
+      });
+      
+      allLeads.push(...filteredLeads);
 
       if (leads.length < limit) break;
       page++;
@@ -130,7 +206,21 @@ wss.on('connection', (ws, req) => {
     clientsByLogin[normalizedLogin].push(ws);
     console.log(`Курьер подключился с логином ${normalizedLogin} через WebSocket`);
 
-    const tags = couriers[normalizedLogin]?.tags || [normalizedLogin];
+    const courierData = couriers[normalizedLogin];
+    let tags = [];
+    if (courierData) {
+      if (courierData.tags) {
+        tags = courierData.tags;
+      } else if (courierData.tag) {
+        tags = [courierData.tag];
+      } else {
+        tags = [normalizedLogin];
+      }
+    } else {
+      tags = [normalizedLogin];
+    }
+    console.log(`Теги для ${normalizedLogin}:`, tags);
+
     const allOrders = tags.flatMap(tag => ordersByCourier[tag] || []);
     const uniqueOrders = Array.from(new Map(allOrders.map(order => [order.id, order])).values());
     ws.send(JSON.stringify({ type: 'orders', data: uniqueOrders }));
@@ -174,7 +264,14 @@ app.post('/api/login', (req, res) => {
 
 app.get('/api/leads', (req, res) => {
   const { tag } = req.query;
-  const tags = tag ? tag.split(',') : [];
+  let tags = tag ? tag.split(',') : [];
+  
+  // Если передан логин вместо тега, используем теги из couriers.json
+  if (tags.length === 1 && couriers[tags[0]]) {
+    tags = couriers[tags[0]].tags || [tags[0]];
+    console.log(`Замена логина ${tags[0]} на теги:`, tags);
+  }
+  
   const allOrders = tags.flatMap(t => ordersByCourier[t] || []);
   const uniqueOrders = Array.from(new Map(allOrders.map(order => [order.id, order])).values());
   res.json({ _embedded: { leads: uniqueOrders } });
@@ -263,24 +360,37 @@ app.post('/api/webhook/:courier', async (req, res) => {
   if (!courierData) {
     return res.status(400).json({ error: 'Курьер не найден' });
   }
-  const tags = courierData.tags || [courier];
+  
+  let tags = [];
+  if (courierData.tags) {
+    tags = courierData.tags;
+  } else if (courierData.tag) {
+    tags = [courierData.tag];
+  } else {
+    tags = [courier];
+  }
+  console.log(`Обработка вебхука для ${courier}, теги:`, tags);
 
   try {
     webhookQueue[courier] = (webhookQueue[courier] || 0) + 1;
     console.log(`Получен вебхук для ${courier}, всего: ${webhookQueue[courier]}`);
 
-    const response = await axios.get(`https://${AMOCRM_DOMAIN}/api/v4/leads`, {
-      headers: { Authorization: `Bearer ${API_TOKEN}` },
-      params: {
-        with: 'contacts',
-        filter: { statuses: [{ pipeline_id: 4963870, status_id: 54415026 }], tags: tags },
-        limit: 10
-      },
+    const response = await fetchFromAmoCRM({
+      with: 'contacts',
+      filter: { statuses: [{ pipeline_id: 4963870, status_id: 54415026 }], tags: tags },
+      limit: 10
     });
 
-    let newLeads = response.data._embedded.leads.filter(lead =>
-      lead._embedded.tags.some(t => tags.includes(t.name))
-    );
+    let newLeads = response._embedded.leads.filter(lead => {
+      const leadTags = lead._embedded.tags.map(t => t.name);
+      const hasMatchingTag = leadTags.some(t => tags.includes(t));
+      console.log(`Проверка заказа ${lead.id} в вебхуке:`, {
+        leadTags,
+        searchTags: tags,
+        hasMatch: hasMatchingTag
+      });
+      return hasMatchingTag;
+    });
 
     for (const lead of newLeads) {
       const contactId = lead._embedded?.contacts?.[0]?.id;
@@ -397,8 +507,10 @@ app.post('/api/location', (req, res) => {
   const normalizedLogin = login.toLowerCase();
 
   if (live === false) {
-    delete courierLocations[normalizedLogin];
-    console.log(`Live-сессия для ${normalizedLogin} завершена`);
+    console.log(`Live-сессия для ${normalizedLogin} завершена для приложения`);
+    if (courierLocations[normalizedLogin]) {
+      courierLocations[normalizedLogin].live = false;
+    }
   } else if (lat && lng) {
     courierLocations[normalizedLogin] = { lat, lng, lastUpdate: Date.now(), live: true };
     console.log(`Получены live координаты для ${normalizedLogin}: ${lat}, ${lng}`);
@@ -569,6 +681,25 @@ const checkOrdersValidity = async () => {
     console.error('Ошибка при проверке актуальности заказов:', error.message);
   }
 };
+
+// Проверка устаревших местоположений для карты
+setInterval(() => {
+  const now = Date.now();
+  for (const login in courierLocations) {
+    const { lastUpdate } = courierLocations[login];
+    const timeSinceUpdate = now - lastUpdate;
+    if (timeSinceUpdate > LIVE_UPDATE_INTERVAL + MAP_DISPLAY_EXTENSION) {
+      console.log(`Локация ${login} устарела более чем на 12 минут, удаляем с карты`);
+      delete courierLocations[login];
+      wss.clients.forEach(client => {
+        const clientParams = new URLSearchParams(client.url?.split('?')[1] || '');
+        if (client.readyState === WebSocket.OPEN && clientParams.get('type') === 'map') {
+          client.send(JSON.stringify({ type: 'locations', data: courierLocations }));
+        }
+      });
+    }
+  }
+}, 30000);
 
 app.get('/cron', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'cron.html'));
